@@ -1,0 +1,63 @@
+name: Build ReShade main x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout ReShade and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build 64-bit Release
+        shell: pwsh
+        run: |
+          msbuild ReShade.sln `
+            /m `
+            /t:ReShade `
+            /p:Configuration=Release `
+            /p:Platform=x64
+
+          if (-not (Test-Path "bin\x64\Release\ReShade64.dll")) {
+            throw "ReShade64.dll was not produced."
+          }
+
+      - name: Record build information
+        shell: pwsh
+        run: |
+          "Repository: $env:GITHUB_REPOSITORY" | Set-Content build-info.txt
+          "Commit: $env:GITHUB_SHA" | Add-Content build-info.txt
+          "Built UTC: $([DateTime]::UtcNow.ToString('o'))" | Add-Content build-info.txt
+
+          Get-FileHash `
+            "bin\x64\Release\ReShade64.dll" `
+            -Algorithm SHA256 |
+            Format-List |
+            Out-String |
+            Add-Content build-info.txt
+
+      - name: Upload ReShade build
+        uses: actions/upload-artifact@v4
+        with:
+          name: reshade-main-x64-${{ github.sha }}
+          path: |
+            bin/x64/Release/ReShade64.dll
+            bin/x64/Release/ReShade64.pdb
+            build-info.txt
+          if-no-files-found: error
