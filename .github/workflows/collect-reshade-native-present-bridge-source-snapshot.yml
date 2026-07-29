@@ -1,0 +1,273 @@
+name: Collect ReShade Native Present Bridge Source Snapshot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout exact ReShade source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Show source revision
+        shell: pwsh
+        run: |
+          python --version
+          git rev-parse HEAD
+          git status --short
+
+      - name: Collect native Present bridge source surface
+        shell: pwsh
+        run: |
+          @'
+          from __future__ import annotations
+
+          import hashlib
+          import re
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          ROOT = Path.cwd()
+          OUT = ROOT / "native-present-bridge-source"
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          required_files = [
+              "source/d3d12/d3d12.cpp",
+              "source/d3d12/d3d12_device.cpp",
+              "source/d3d12/d3d12_device.hpp",
+              "source/d3d12/d3d12_command_queue.cpp",
+              "source/d3d12/d3d12_command_queue.hpp",
+              "source/d3d12/d3d12_impl_device.cpp",
+              "source/d3d12/d3d12_impl_device.hpp",
+              "source/d3d12/d3d12_impl_command_queue.cpp",
+              "source/d3d12/d3d12_impl_command_queue.hpp",
+              "source/d3d12/d3d12_impl_command_list_immediate.cpp",
+              "source/d3d12/d3d12_impl_command_list_immediate.hpp",
+              "source/d3d12/d3d12_impl_swapchain.cpp",
+              "source/d3d12/d3d12_impl_swapchain.hpp",
+              "source/dxgi/dxgi_factory.cpp",
+              "source/dxgi/dxgi_factory.hpp",
+              "source/dxgi/dxgi_swapchain.cpp",
+              "source/dxgi/dxgi_swapchain.hpp",
+              "source/dxgi/dxgi.cpp",
+              "source/dxgi/dxgi.hpp",
+              "source/runtime.cpp",
+              "source/runtime.hpp",
+              "source/runtime_manager.cpp",
+              "source/runtime_manager.hpp",
+              "source/addon_manager.cpp",
+              "source/addon_manager.hpp",
+              "ReShade.vcxproj",
+              "ReShade.vcxproj.filters",
+              "ReShade.props",
+          ]
+
+          missing_required: list[str] = []
+          copied: list[Path] = []
+
+          def copy_relative(rel: str, *, required: bool = False) -> None:
+              src = ROOT / rel
+              if not src.is_file():
+                  if required:
+                      missing_required.append(rel)
+                  return
+              dst = OUT / rel
+              dst.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(src, dst)
+              copied.append(src)
+
+          # Core files that must exist for a trustworthy bridge patch.
+          for rel in required_files:
+              copy_relative(
+                  rel,
+                  required=rel in {
+                      "source/d3d12/d3d12.cpp",
+                      "source/d3d12/d3d12_impl_device.cpp",
+                      "source/d3d12/d3d12_impl_device.hpp",
+                      "source/d3d12/d3d12_impl_command_queue.cpp",
+                      "source/d3d12/d3d12_impl_command_queue.hpp",
+                      "source/d3d12/d3d12_impl_swapchain.cpp",
+                      "source/d3d12/d3d12_impl_swapchain.hpp",
+                      "source/dxgi/dxgi_factory.cpp",
+                      "source/dxgi/dxgi_swapchain.cpp",
+                      "source/dxgi/dxgi_swapchain.hpp",
+                      "ReShade.vcxproj",
+                  },
+              )
+
+          if missing_required:
+              raise RuntimeError(
+                  "Required source files are missing:\n  "
+                  + "\n  ".join(missing_required)
+              )
+
+          # Collect any additional C/C++ source containing the exact bridge
+          # symbols. This protects against layout changes in the fork.
+          symbol_patterns = {
+              "factory_swapchain_template": r"IDXGIFactory2_CreateSwapChainForHwnd_Impl",
+              "factory_swapchain_method": r"CreateSwapChainForHwnd",
+              "dxgi_swapchain_ctor": r"DXGISwapChain::DXGISwapChain",
+              "dxgi_present": r"DXGISwapChain::Present",
+              "dxgi_present1": r"DXGISwapChain::Present1",
+              "dxgi_on_present": r"DXGISwapChain::on_present",
+              "skip_native_device": r"Skipping swap chain because it was created without a proxy Direct3D device",
+              "query_device": r"query_device",
+              "d3d12_create_device": r"D3D12CreateDevice",
+              "device_impl_ctor": r"device_impl::device_impl",
+              "queue_impl_ctor": r"command_queue_impl::command_queue_impl",
+              "queue_impl_flush": r"flush_immediate_command_list",
+              "swapchain_impl_ctor": r"swapchain_impl::swapchain_impl",
+              "effect_runtime_create": r"create_effect_runtime",
+              "effect_runtime_init": r"init_effect_runtime",
+              "effect_runtime_present": r"present_effect_runtime",
+              "effect_runtime_destroy": r"destroy_effect_runtime",
+          }
+
+          source_extensions = {".cpp", ".hpp", ".h", ".c", ".inl"}
+          searchable_roots = [ROOT / "source", ROOT / "include"]
+          symbol_hits: dict[str, list[tuple[str, int, str]]] = {
+              name: [] for name in symbol_patterns
+          }
+
+          for search_root in searchable_roots:
+              if not search_root.is_dir():
+                  continue
+              for path in search_root.rglob("*"):
+                  if not path.is_file() or path.suffix.lower() not in source_extensions:
+                      continue
+                  try:
+                      text = path.read_text(encoding="utf-8-sig")
+                  except UnicodeDecodeError:
+                      text = path.read_text(encoding="latin-1")
+
+                  matched_file = False
+                  lines = text.splitlines()
+                  for name, pattern in symbol_patterns.items():
+                      regex = re.compile(pattern)
+                      for line_number, line in enumerate(lines, start=1):
+                          if regex.search(line):
+                              symbol_hits[name].append(
+                                  (path.relative_to(ROOT).as_posix(), line_number, line.strip())
+                              )
+                              matched_file = True
+                  if matched_file:
+                      rel = path.relative_to(ROOT).as_posix()
+                      if path not in copied:
+                          copy_relative(rel)
+
+          required_symbols = [
+              "factory_swapchain_method",
+              "dxgi_swapchain_ctor",
+              "dxgi_on_present",
+              "d3d12_create_device",
+              "device_impl_ctor",
+              "queue_impl_ctor",
+              "queue_impl_flush",
+              "swapchain_impl_ctor",
+              "effect_runtime_create",
+              "effect_runtime_present",
+          ]
+          missing_symbols = [
+              name for name in required_symbols if not symbol_hits[name]
+          ]
+          if missing_symbols:
+              raise RuntimeError(
+                  "Required bridge symbols were not found:\n  "
+                  + "\n  ".join(missing_symbols)
+              )
+
+          report = OUT / "source-signatures.txt"
+          with report.open("w", encoding="utf-8", newline="\n") as stream:
+              for name, pattern in symbol_patterns.items():
+                  stream.write(f"===== {name} =====\n")
+                  stream.write(f"pattern: {pattern}\n")
+                  hits = symbol_hits[name]
+                  if not hits:
+                      stream.write("NO MATCHES\n\n")
+                      continue
+                  for rel, line_number, line in hits:
+                      stream.write(f"{rel}:{line_number}: {line}\n")
+                  stream.write("\n")
+
+          commit = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          info = OUT / "snapshot-info.txt"
+          with info.open("w", encoding="utf-8", newline="\n") as stream:
+              stream.write("Purpose: exact-source snapshot for a native D3D12 Present bridge\n")
+              stream.write(f"Repository: {subprocess.check_output(['git', 'config', '--get', 'remote.origin.url'], text=True).strip()}\n")
+              stream.write(f"Commit: {commit}\n")
+              stream.write(f"Files copied: {len(copied)}\n")
+              stream.write("Design target: keep game-visible ID3D12Device, queues and command lists native\n")
+              stream.write("Design target: capture native queue at DXGI swap-chain creation\n")
+              stream.write("Design target: host ReShade runtime with private non-COM implementation objects\n")
+              stream.write("Design target: never return ReShade D3D12 COM proxies to D3DMetal or the game\n")
+
+          manifest = OUT / "sha256-manifest.txt"
+          output_files = sorted(
+              p for p in OUT.rglob("*") if p.is_file() and p != manifest
+          )
+          with manifest.open("w", encoding="utf-8", newline="\n") as stream:
+              for path in output_files:
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  stream.write(
+                      f"{digest}  {path.relative_to(OUT).as_posix()}\n"
+                  )
+
+          print("Source snapshot completed.")
+          print(f"Commit: {commit}")
+          print(f"Files copied: {len(copied)}")
+          print("Required bridge symbols found:")
+          for name in required_symbols:
+              print(f"  {name}: {len(symbol_hits[name])} match(es)")
+          '@ | Set-Content collect_native_present_bridge_source.py -Encoding utf8
+
+          python collect_native_present_bridge_source.py
+
+      - name: Show bridge signatures
+        shell: pwsh
+        run: |
+          Get-Content "native-present-bridge-source\snapshot-info.txt"
+          Write-Host "===== KEY SIGNATURES ====="
+          Select-String `
+            -Path "native-present-bridge-source\source-signatures.txt" `
+            -Pattern "DXGISwapChain::DXGISwapChain|DXGISwapChain::on_present|command_queue_impl::command_queue_impl|device_impl::device_impl|swapchain_impl::swapchain_impl|flush_immediate_command_list|CreateSwapChainForHwnd" `
+            -Context 0,1
+
+      - name: Archive exact source snapshot
+        shell: pwsh
+        run: |
+          $archive = "reshade-native-present-bridge-source-$env:GITHUB_SHA.zip"
+          Compress-Archive `
+            -Path "native-present-bridge-source\*" `
+            -DestinationPath $archive `
+            -CompressionLevel Optimal `
+            -Force
+          $hash = Get-FileHash $archive -Algorithm SHA256
+          $size = (Get-Item $archive).Length
+          Write-Host "Archive: $archive"
+          Write-Host "Size: $size bytes"
+          Write-Host "SHA256: $($hash.Hash)"
+
+      - name: Upload native Present bridge source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: reshade-native-present-bridge-source-${{ github.sha }}
+          path: |
+            reshade-native-present-bridge-source-${{ github.sha }}.zip
+          if-no-files-found: error
+          retention-days: 14
