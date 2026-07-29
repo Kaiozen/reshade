@@ -67,10 +67,6 @@ jobs:
               encoding="utf-8-sig"
           )
 
-          # -------------------------------------------------
-          # Locate the three runtime lifecycle functions.
-          # -------------------------------------------------
-
           init_start = source.find(
               "void DXGISwapChain::on_init("
           )
@@ -113,8 +109,9 @@ jobs:
           ]
 
           # -------------------------------------------------
-          # Keep add-on init events, but skip the ordinary
-          # effect runtime on D3D12.
+          # Keep add-on init events active.
+          # Skip only normal ReShade FX/runtime initialization
+          # for DirectX 12.
           # -------------------------------------------------
 
           init_old = (
@@ -132,15 +129,15 @@ jobs:
               "\t\treshade::log::message(\n"
               "\t\t\treshade::log::level::info,\n"
               "\t\t\t\"D3DMetal add-on-core: "
-              "skipping D3D12 effect runtime "
-              "initialization; add-on events remain active.\");\n"
+              "D3D12 effect runtime initialization skipped; "
+              "add-on events remain active.\");\n"
               "\t}"
           )
 
           if init_block.count(init_old) != 1:
               raise RuntimeError(
                   "Expected exactly one init_effect_runtime "
-                  "call in on_init."
+                  "call inside on_init."
               )
 
           init_block = init_block.replace(
@@ -150,8 +147,8 @@ jobs:
           )
 
           # -------------------------------------------------
-          # Skip effect-runtime reset only on D3D12.
-          # Add-on destroy_swapchain events remain untouched.
+          # Keep add-on destroy_swapchain events active.
+          # Skip normal effect-runtime reset for DirectX 12.
           # -------------------------------------------------
 
           reset_old = (
@@ -163,13 +160,20 @@ jobs:
               "reshade::api::device_api::d3d12)\n"
               "\t{\n"
               "\t\treshade::reset_effect_runtime(_impl);\n"
+              "\t}\n"
+              "\telse\n"
+              "\t{\n"
+              "\t\treshade::log::message(\n"
+              "\t\t\treshade::log::level::info,\n"
+              "\t\t\t\"D3DMetal add-on-core: "
+              "D3D12 effect runtime reset skipped.\");\n"
               "\t}"
           )
 
           if reset_block.count(reset_old) != 1:
               raise RuntimeError(
                   "Expected exactly one reset_effect_runtime "
-                  "call in on_reset."
+                  "call inside on_reset."
               )
 
           reset_block = reset_block.replace(
@@ -179,15 +183,15 @@ jobs:
           )
 
           # -------------------------------------------------
-          # Keep add-on present events, but skip the normal
-          # ReShade effect-runtime presentation on D3D12.
+          # There are three present_effect_runtime calls:
+          # D3D10, D3D11 and D3D12.
           #
-          # There are currently three calls, corresponding
-          # to D3D10, D3D11 and D3D12.
+          # Remove only the third one, which belongs to D3D12.
+          # Add-on present events remain untouched.
           # -------------------------------------------------
 
           present_pattern = re.compile(
-              r"(?m)^([ \t]*)"
+              r"(?m)^(?P<indent>[ \t]*)"
               r"reshade::present_effect_runtime"
               r"\(_impl\);"
           )
@@ -198,25 +202,29 @@ jobs:
 
           if len(present_matches) != 3:
               raise RuntimeError(
-                  "Expected three present_effect_runtime calls, "
-                  f"found {len(present_matches)}."
+                  "Expected exactly three "
+                  "present_effect_runtime calls, found "
+                  + str(len(present_matches))
+                  + "."
               )
 
-          def replace_present(match):
-              indent = match.group(1)
+          d3d12_present = present_matches[2]
+          indent = d3d12_present.group("indent")
 
-              return (
-                  f"{indent}if (_direct3d_version != "
-                  "reshade::api::device_api::d3d12)\n"
-                  f"{indent}{{\n"
-                  f"{indent}\treshade::present_effect_runtime"
-                  "(_impl);\n"
-                  f"{indent}}"
-              )
+          present_replacement = (
+              indent
+              + "reshade::log::message(\n"
+              + indent
+              + "\treshade::log::level::info,\n"
+              + indent
+              + "\t\"D3DMetal add-on-core: "
+              + "D3D12 effect runtime presentation skipped.\");"
+          )
 
-          present_block = present_pattern.sub(
-              replace_present,
-              present_block,
+          present_block = (
+              present_block[:d3d12_present.start()]
+              + present_replacement
+              + present_block[d3d12_present.end():]
           )
 
           source = (
@@ -236,32 +244,54 @@ jobs:
               encoding="utf-8"
           )
 
-          required = [
-              "D3DMetal add-on-core: skipping D3D12 "
-              "effect runtime initialization",
+          required_strings = [
+              "D3DMetal add-on-core: "
+              "D3D12 effect runtime initialization skipped",
+              "D3DMetal add-on-core: "
+              "D3D12 effect runtime reset skipped",
+              "D3DMetal add-on-core: "
+              "D3D12 effect runtime presentation skipped",
               "reshade::addon_event::init_swapchain",
               "reshade::addon_event::destroy_swapchain",
               "reshade::addon_event::present",
           ]
 
-          for text in required:
-              if text not in verification:
+          for required in required_strings:
+              if required not in verification:
                   raise RuntimeError(
-                      "Patch verification failed: " + text
+                      "Patch verification failed: "
+                      + required
                   )
 
-          if verification.count(
+          remaining_present_calls = verification.count(
+              "reshade::present_effect_runtime(_impl);"
+          )
+
+          if remaining_present_calls != 2:
+              raise RuntimeError(
+                  "Expected two remaining effect-runtime "
+                  "present calls for D3D10/D3D11, found "
+                  + str(remaining_present_calls)
+                  + "."
+              )
+
+          d3d12_guards = verification.count(
               "_direct3d_version != "
               "reshade::api::device_api::d3d12"
-          ) != 5:
+          )
+
+          if d3d12_guards != 2:
               raise RuntimeError(
-                  "Expected five D3D12 runtime guards."
+                  "Expected two D3D12 runtime guards, found "
+                  + str(d3d12_guards)
+                  + "."
               )
 
           print("D3DMetal add-on-core patch applied.")
           print("D3D12 effect runtime initialization disabled.")
           print("D3D12 effect runtime reset disabled.")
           print("D3D12 effect runtime presentation disabled.")
+          print("D3D10 and D3D11 behavior unchanged.")
           print("ReShade add-on events remain active.")
           '@ | Set-Content `
             -Path patch_d3dmetal_addon_core.py `
@@ -272,7 +302,7 @@ jobs:
       - name: Verify patched source
         shell: pwsh
         run: |
-          Write-Host "===== ADD-ON CORE MARKER ====="
+          Write-Host "===== ADD-ON CORE MARKERS ====="
 
           Select-String `
             -Path "source\dxgi\dxgi_swapchain.cpp" `
@@ -289,7 +319,13 @@ jobs:
               "addon_event::init_swapchain", `
               "addon_event::destroy_swapchain", `
               "addon_event::present" |
-            Select-Object -First 20
+            Select-Object -First 30
+
+          Write-Host "===== REMAINING EFFECT PRESENT CALLS ====="
+
+          Select-String `
+            -Path "source\dxgi\dxgi_swapchain.cpp" `
+            -Pattern "present_effect_runtime"
 
       - name: Build ReShade solution
         shell: pwsh
@@ -370,7 +406,13 @@ jobs:
           "SHA256: $($hash.Hash)" |
             Add-Content build-info.txt
 
-          "Patch: D3D12 effect runtime disabled" |
+          "Patch: D3D12 effect runtime initialization disabled" |
+            Add-Content build-info.txt
+
+          "Patch: D3D12 effect runtime reset disabled" |
+            Add-Content build-info.txt
+
+          "Patch: D3D12 effect runtime presentation disabled" |
             Add-Content build-info.txt
 
           "Patch: ReShade add-on events preserved" |
