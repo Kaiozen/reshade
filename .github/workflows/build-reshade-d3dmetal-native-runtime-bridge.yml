@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal Native Runtime Bridge x64
+name: Build ReShade D3DMetal Native Runtime Bridge v2 x64
 
 on:
   workflow_dispatch:
@@ -187,8 +187,17 @@ jobs:
           # 5) When a native D3D12 queue creates a swap chain, build the private runtime bridge
           rel = 'source/dxgi/dxgi.cpp'
           s = read(rel)
+          signature_old = "static void init_swapchain_proxy(IDXGIFactory *factory, reshade::api::device_api direct3d_version, const com_ptr<IUnknown> &device_proxy, T *&swapchain, DXGI_USAGE usage, [[maybe_unused]] UINT sync_interval, [[maybe_unused]] DXGI_SWAP_CHAIN_DESC orig_desc, [[maybe_unused]] bool desc_modified)"
+          signature_new = "static void init_swapchain_proxy(IDXGIFactory *factory, reshade::api::device_api direct3d_version, const com_ptr<IUnknown> &device_proxy, IUnknown *native_device_object, T *&swapchain, DXGI_USAGE usage, [[maybe_unused]] UINT sync_interval, [[maybe_unused]] DXGI_SWAP_CHAIN_DESC orig_desc, [[maybe_unused]] bool desc_modified)"
+          s = replace_once(s, signature_old, signature_new, 'native bridge init signature')
+          call_old = 'init_swapchain_proxy(pFactory, direct3d_version, device_proxy, *ppSwapChain'
+          call_new = 'init_swapchain_proxy(pFactory, direct3d_version, device_proxy, pDevice, *ppSwapChain'
+          call_count = s.count(call_old)
+          if call_count != 4:
+              raise RuntimeError(f'native bridge init calls: expected 4 occurrences, found {call_count}')
+          s = s.replace(call_old, call_new)
           old = '''\telse\n\t{\n\t\treshade::log::message(reshade::log::level::warning, "Skipping swap chain because it was created without a proxy Direct3D device.");\n\t}\n'''
-          new = '''\telse if (com_ptr<ID3D12CommandQueue> native_command_queue;\n\t\tSUCCEEDED(device->QueryInterface(&native_command_queue)))\n\t{\n\t\tcom_ptr<ID3D12Device> native_device;\n\t\tcom_ptr<IDXGISwapChain3> swapchain3;\n\t\tif (SUCCEEDED(native_command_queue->GetDevice(IID_PPV_ARGS(&native_device))) &&\n\t\t\tSUCCEEDED(swapchain->QueryInterface(&swapchain3)))\n\t\t{\n\t\t\treshade::log::message(reshade::log::level::info, "D3DMetal native runtime bridge: captured native ID3D12Device and ID3D12CommandQueue at DXGI swap-chain creation.");\n\t\t\tswapchain_proxy = new DXGISwapChain(factory, native_device.get(), native_command_queue.get(), swapchain3.get());\n\t\t}\n\t\telse\n\t\t{\n\t\t\treshade::log::message(reshade::log::level::warning, "D3DMetal native runtime bridge: native D3D12 objects were found, but the bridge could not initialize.");\n\t\t}\n\t}\n\telse\n\t{\n\t\treshade::log::message(reshade::log::level::warning, "Skipping swap chain because it was created without a proxy Direct3D device.");\n\t}\n'''
+          new = '''\telse if (com_ptr<ID3D12CommandQueue> native_command_queue;\n\t\tnative_device_object != nullptr && SUCCEEDED(native_device_object->QueryInterface(&native_command_queue)))\n\t{\n\t\tcom_ptr<ID3D12Device> native_device;\n\t\tcom_ptr<IDXGISwapChain3> swapchain3;\n\t\tif (SUCCEEDED(native_command_queue->GetDevice(IID_PPV_ARGS(&native_device))) &&\n\t\t\tSUCCEEDED(swapchain->QueryInterface(&swapchain3)))\n\t\t{\n\t\t\treshade::log::message(reshade::log::level::info, "D3DMetal native runtime bridge: captured native ID3D12Device and ID3D12CommandQueue at DXGI swap-chain creation.");\n\t\t\tswapchain_proxy = new DXGISwapChain(factory, native_device.get(), native_command_queue.get(), swapchain3.get());\n\t\t}\n\t\telse\n\t\t{\n\t\t\treshade::log::message(reshade::log::level::warning, "D3DMetal native runtime bridge: native D3D12 objects were found, but the bridge could not initialize.");\n\t\t}\n\t}\n\telse\n\t{\n\t\treshade::log::message(reshade::log::level::warning, "Skipping swap chain because it was created without a proxy Direct3D device.");\n\t}\n'''
           s = replace_once(s, old, new, 'native bridge init path')
           write(rel, s)
           
@@ -200,6 +209,8 @@ jobs:
                   'new D3D12Device',
               ],
               'source/dxgi/dxgi.cpp': [
+                  'IUnknown *native_device_object',
+                  'native_device_object != nullptr && SUCCEEDED(native_device_object->QueryInterface(&native_command_queue))',
                   'captured native ID3D12Device and ID3D12CommandQueue',
                   'new DXGISwapChain(factory, native_device.get(), native_command_queue.get(), swapchain3.get())',
               ],
@@ -225,6 +236,12 @@ jobs:
           if not (entry.find('returning the original ID3D12Device') < entry.find('return hr;', entry.find('returning the original ID3D12Device')) < entry.find('new D3D12Device')):
               raise RuntimeError('native device early return ordering failed')
           
+          dxgi = read('source/dxgi/dxgi.cpp')
+          if dxgi.count('init_swapchain_proxy(pFactory, direct3d_version, device_proxy, pDevice, *ppSwapChain') != 4:
+              raise RuntimeError('native device object was not forwarded to all swap-chain initialization paths')
+          if 'SUCCEEDED(device->QueryInterface(&native_command_queue))' in dxgi:
+              raise RuntimeError('stale undeclared device identifier remains in native bridge path')
+
           print('PATCH_OK')
           '@ | Set-Content `
             -Path patch_native_runtime_bridge.py `
@@ -365,7 +382,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal Native D3D12 Runtime Bridge ReShade" |
+          "Build: D3DMetal Native D3D12 Runtime Bridge v2 ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -380,6 +397,8 @@ jobs:
           "Patch: Original ID3D12Device returned to game and D3DMetal" |
             Add-Content build-info.txt
           "Patch: Game-created D3D12 queues and command lists remain native" |
+            Add-Content build-info.txt
+          "Patch: Native pDevice is forwarded into swap-chain initialization before queue capture" |
             Add-Content build-info.txt
           "Patch: Native device and presentation queue captured at DXGI swap-chain creation" |
             Add-Content build-info.txt
@@ -397,7 +416,7 @@ jobs:
       - name: Upload native runtime bridge
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-native-runtime-bridge-${{ github.sha }}
+          name: reshade-d3dmetal-native-runtime-bridge-v2-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
