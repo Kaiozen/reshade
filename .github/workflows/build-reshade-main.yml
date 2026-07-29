@@ -1,174 +1,247 @@
-      - name: Patch D3DMetal query paths
+name: Build ReShade D3DMetal Query-Safe x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout ReShade and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Force-update submodules
+        shell: pwsh
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --force
+
+          if (-not (Test-Path "deps\stb\stb_image.h")) {
+            throw "ERROR: deps\stb\stb_image.h is missing."
+          }
+
+          if (-not (Test-Path "deps\glad\glad\__init__.py")) {
+            throw "ERROR: GLAD Python files are missing."
+          }
+
+          Write-Host "Submodules are complete."
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Show build environment
+        shell: pwsh
+        run: |
+          python --version
+          msbuild -version
+          git rev-parse HEAD
+          git submodule status --recursive
+
+      - name: Patch ReShade GPU timestamp queries
         shell: pwsh
         run: |
           @'
           from pathlib import Path
+          import re
 
           runtime_path = Path("source/runtime.cpp")
-          command_list_path = Path(
-              "source/d3d12/d3d12_command_list.cpp"
-          )
 
-          runtime = runtime_path.read_text(
+          if not runtime_path.is_file():
+              raise RuntimeError(
+                  "source/runtime.cpp was not found."
+              )
+
+          source = runtime_path.read_text(
               encoding="utf-8-sig"
           )
 
-          timestamp_line = (
-              "_timestamp_frequency = "
-              "graphics_queue->get_timestamp_frequency();"
+          original_source = source
+
+          # Avoid calling D3DMetal's timestamp-frequency interface
+          # when the ReShade runtime is constructed.
+          source, frequency_count = re.subn(
+              r"^[ \t]*_timestamp_frequency[ \t]*="
+              r"[ \t]*graphics_queue->"
+              r"get_timestamp_frequency\(\);[ \t]*$",
+              "\t_timestamp_frequency = 0; "
+              "// D3DMetal compatibility: GPU timing disabled",
+              source,
+              count=1,
+              flags=re.MULTILINE,
           )
 
-          if timestamp_line not in runtime:
+          # Prevent ReShade from creating its own timestamp query heap.
+          source, heap_count = re.subn(
+              r"(\t// Create optional query heap "
+              r"for time measurements\r?\n)"
+              r"\tif \(permutation_index == 0 &&",
+              r"\1\tif (false && permutation_index == 0 &&",
+              source,
+              count=1,
+          )
+
+          if frequency_count != 1:
               raise RuntimeError(
-                  "Could not find timestamp-frequency line."
+                  "Could not patch get_timestamp_frequency. "
+                  f"Matches: {frequency_count}"
               )
 
-          runtime = runtime.replace(
-              timestamp_line,
-              "_timestamp_frequency = 0; "
-              "// D3DMetal compatibility: disable GPU timing",
-              1,
-          )
-
-          query_heap_marker = (
-              "// Create optional query heap for time measurements\n"
-              "\tif (permutation_index == 0 &&"
-          )
-
-          if query_heap_marker not in runtime:
+          if heap_count != 1:
               raise RuntimeError(
-                  "Could not find ReShade query-heap creation."
+                  "Could not patch timestamp query-heap creation. "
+                  f"Matches: {heap_count}"
               )
 
-          runtime = runtime.replace(
-              query_heap_marker,
-              "// D3DMetal compatibility: query heap disabled\n"
-              "\tif (false && permutation_index == 0 &&",
-              1,
-          )
+          if source == original_source:
+              raise RuntimeError(
+                  "Patch made no changes."
+              )
 
           runtime_path.write_text(
-              runtime,
-              encoding="utf-8",
-          )
-
-          source = command_list_path.read_text(
-              encoding="utf-8-sig"
-          )
-
-          def replace_method(
-              text: str,
-              start_marker: str,
-              next_marker: str,
-              replacement: str,
-          ) -> str:
-              start = text.find(start_marker)
-
-              if start < 0:
-                  raise RuntimeError(
-                      f"Missing method: {start_marker}"
-                  )
-
-              end = text.find(next_marker, start)
-
-              if end < 0:
-                  raise RuntimeError(
-                      f"Missing next method: {next_marker}"
-                  )
-
-              return (
-                  text[:start]
-                  + replacement.rstrip()
-                  + "\n\n"
-                  + text[end:]
-              )
-
-          begin_signature = (
-              "void STDMETHODCALLTYPE "
-              "D3D12GraphicsCommandList::BeginQuery("
-          )
-
-          end_signature = (
-              "void STDMETHODCALLTYPE "
-              "D3D12GraphicsCommandList::EndQuery("
-          )
-
-          resolve_signature = (
-              "void STDMETHODCALLTYPE "
-              "D3D12GraphicsCommandList::ResolveQueryData("
-          )
-
-          predication_signature = (
-              "void STDMETHODCALLTYPE "
-              "D3D12GraphicsCommandList::SetPredication("
-          )
-
-          source = replace_method(
-              source,
-              begin_signature,
-              end_signature,
-              r'''
-          void STDMETHODCALLTYPE D3D12GraphicsCommandList::BeginQuery(
-              ID3D12QueryHeap *pQueryHeap,
-              D3D12_QUERY_TYPE Type,
-              UINT Index)
-          {
-              // Bypass ReShade query events on D3DMetal.
-              _orig->BeginQuery(pQueryHeap, Type, Index);
-          }
-          ''',
-          )
-
-          source = replace_method(
-              source,
-              end_signature,
-              resolve_signature,
-              r'''
-          void STDMETHODCALLTYPE D3D12GraphicsCommandList::EndQuery(
-              ID3D12QueryHeap *pQueryHeap,
-              D3D12_QUERY_TYPE Type,
-              UINT Index)
-          {
-              // Bypass ReShade query events on D3DMetal.
-              _orig->EndQuery(pQueryHeap, Type, Index);
-          }
-          ''',
-          )
-
-          source = replace_method(
-              source,
-              resolve_signature,
-              predication_signature,
-              r'''
-          void STDMETHODCALLTYPE D3D12GraphicsCommandList::ResolveQueryData(
-              ID3D12QueryHeap *pQueryHeap,
-              D3D12_QUERY_TYPE Type,
-              UINT StartIndex,
-              UINT NumQueries,
-              ID3D12Resource *pDestinationBuffer,
-              UINT64 AlignedDestinationBufferOffset)
-          {
-              // Bypass ReShade query events on D3DMetal.
-              _orig->ResolveQueryData(
-                  pQueryHeap,
-                  Type,
-                  StartIndex,
-                  NumQueries,
-                  pDestinationBuffer,
-                  AlignedDestinationBufferOffset
-              );
-          }
-          ''',
-          )
-
-          command_list_path.write_text(
               source,
               encoding="utf-8",
+              newline="\n",
           )
 
-          print("D3DMetal query patch applied.")
-          print("GPU timing disabled.")
-          print("D3D12 query event interception disabled.")
-          '@ | Set-Content -Encoding utf8 patch_d3dmetal.py
+          verification = runtime_path.read_text(
+              encoding="utf-8"
+          )
 
-          python patch_d3dmetal.py
+          required_strings = [
+              "_timestamp_frequency = 0;",
+              "if (false && permutation_index == 0 &&",
+          ]
+
+          for required in required_strings:
+              if required not in verification:
+                  raise RuntimeError(
+                      f"Patch verification failed: {required}"
+                  )
+
+          print("D3DMetal query-safe patch applied.")
+          print("ReShade GPU timestamp frequency disabled.")
+          print("ReShade timestamp query heap disabled.")
+          '@ | Set-Content `
+            -Path patch_d3dmetal_queries.py `
+            -Encoding utf8
+
+          python patch_d3dmetal_queries.py
+
+      - name: Display patched source
+        shell: pwsh
+        run: |
+          Select-String `
+            -Path "source\runtime.cpp" `
+            -Pattern `
+              "_timestamp_frequency = 0", `
+              "false && permutation_index" `
+            -Context 2,2
+
+      - name: Build ReShade solution
+        shell: pwsh
+        run: |
+          msbuild ReShade.sln `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform="64-bit" `
+            /m:1 `
+            /verbosity:minimal
+
+      - name: Locate built ReShade DLL
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem `
+            -Path . `
+            -Filter "ReShade64.dll" `
+            -Recurse `
+            -File |
+            Where-Object {
+              $_.FullName -notmatch "\\deps\\"
+            } |
+            Select-Object -First 1
+
+          if ($null -eq $dll) {
+            Write-Host "Candidate ReShade files:"
+
+            Get-ChildItem `
+              -Path . `
+              -Recurse `
+              -File |
+              Where-Object {
+                $_.Name -like "ReShade*.dll" -or
+                $_.Name -like "ReShade*.exe"
+              } |
+              Select-Object FullName, Length |
+              Format-Table -AutoSize
+
+            throw "ReShade64.dll was not produced."
+          }
+
+          Write-Host "Built DLL found:"
+          Write-Host $dll.FullName
+
+          Copy-Item `
+            -Path $dll.FullName `
+            -Destination "$env:GITHUB_WORKSPACE\ReShade64.dll" `
+            -Force
+
+          if (-not (
+            Test-Path "$env:GITHUB_WORKSPACE\ReShade64.dll"
+          )) {
+            throw "Failed to copy ReShade64.dll."
+          }
+
+      - name: Create build information
+        shell: pwsh
+        run: |
+          $dll = "$env:GITHUB_WORKSPACE\ReShade64.dll"
+          $hash = Get-FileHash $dll -Algorithm SHA256
+          $file = Get-Item $dll
+
+          "Build: D3DMetal Query-Safe ReShade" |
+            Set-Content build-info.txt
+
+          "Repository: $env:GITHUB_REPOSITORY" |
+            Add-Content build-info.txt
+
+          "Commit: $env:GITHUB_SHA" |
+            Add-Content build-info.txt
+
+          "Built UTC: $([DateTime]::UtcNow.ToString('o'))" |
+            Add-Content build-info.txt
+
+          "Size: $($file.Length) bytes" |
+            Add-Content build-info.txt
+
+          "SHA256: $($hash.Hash)" |
+            Add-Content build-info.txt
+
+          "Patch: ReShade GPU timestamp frequency disabled" |
+            Add-Content build-info.txt
+
+          "Patch: ReShade timestamp query heap disabled" |
+            Add-Content build-info.txt
+
+          Get-Content build-info.txt
+
+      - name: Upload patched ReShade
+        uses: actions/upload-artifact@v4
+        with:
+          name: reshade-d3dmetal-querysafe-${{ github.sha }}
+          path: |
+            ReShade64.dll
+            build-info.txt
+          if-no-files-found: error
+          retention-days: 14
