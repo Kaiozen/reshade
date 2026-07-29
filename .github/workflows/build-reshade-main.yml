@@ -11,39 +11,52 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout ReShade
+      - name: Checkout ReShade and submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Force-update submodules
+        shell: pwsh
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --force
+
+          if (-not (Test-Path "deps\stb\stb_image.h")) {
+            throw "stb_image.h is missing after submodule checkout."
+          }
+
+          if (-not (Test-Path "deps\glad\glad\__init__.py")) {
+            throw "GLAD Python package is missing after submodule checkout."
+          }
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
 
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Show build environment
+      - name: Show environment
         shell: pwsh
         run: |
           python --version
           msbuild -version
-          Get-ChildItem -Name
+          git submodule status --recursive
 
-      - name: Build ReShade x64
+      - name: Build ReShade solution
         shell: pwsh
         run: |
-          msbuild ReShade.vcxproj `
-            /m `
-            /restore `
+          msbuild ReShade.sln `
+            /t:Build `
             /p:Configuration=Release `
-            /p:Platform=x64 `
+            /p:Platform="64-bit" `
+            /m:1 `
             /verbosity:minimal
 
-      - name: Locate ReShade64 DLL
-        id: locate
+      - name: Locate ReShade DLL
         shell: pwsh
         run: |
           $dll = Get-ChildItem `
@@ -54,17 +67,23 @@ jobs:
             Select-Object -First 1
 
           if ($null -eq $dll) {
-            Write-Host "ReShade64.dll was not found. Files named ReShade*:"
-            Get-ChildItem -Path . -Filter "ReShade*" -Recurse |
+            Write-Host "No ReShade64.dll found. Candidate files:"
+            Get-ChildItem -Path . -Recurse -File |
+              Where-Object {
+                $_.Name -like "ReShade*.dll" -or
+                $_.Name -like "ReShade*.exe"
+              } |
               Select-Object FullName, Length |
               Format-Table -AutoSize
-            throw "Build completed without producing ReShade64.dll."
+
+            throw "ReShade64.dll was not produced."
           }
 
-          Write-Host "Found DLL:"
+          Write-Host "Found:"
           Write-Host $dll.FullName
 
-          Copy-Item $dll.FullName `
+          Copy-Item `
+            $dll.FullName `
             "$env:GITHUB_WORKSPACE\ReShade64.dll"
 
       - name: Record build information
