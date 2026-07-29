@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal No-Command-List Core x64
+name: Build ReShade D3DMetal No-Queue No-Command-List Core x64
 
 on:
   workflow_dispatch:
@@ -44,7 +44,7 @@ jobs:
           msbuild -version
           git rev-parse HEAD
           git submodule status --recursive
-      - name: Patch add-on core, direct-only queue, and native command lists
+      - name: Patch add-on core with native queues and native command lists
         shell: pwsh
         run: |
           @'
@@ -196,10 +196,9 @@ jobs:
           )
           # =================================================
           # PATCH 2:
-          # Wrap only the DIRECT command queue.
+          # Do not wrap any D3D12 command queues.
           #
-          # Compute and copy queues are returned directly from
-          # D3DMetal without a ReShade proxy object.
+          # Direct, compute and copy queues remain native D3DMetal objects.
           # =================================================
           device_path = Path(
               "source/d3d12/d3d12_device.cpp"
@@ -231,10 +230,8 @@ jobs:
               "if (SUCCEEDED(hr))"
           )
           queue_replacement = (
-              "if (SUCCEEDED(hr) && "
-              "pDesc->Type == "
-              "D3D12_COMMAND_LIST_TYPE_DIRECT) "
-              "// D3DMetal direct-only queue proxy"
+              "if (false) "
+              "// D3DMetal no-queue diagnostic"
           )
           if queue_block.count(queue_condition) != 1:
               raise RuntimeError(
@@ -333,10 +330,10 @@ jobs:
                       + required
                   )
           required_device_strings = [
-              "D3DMetal direct-only queue proxy",
+              "D3DMetal no-queue diagnostic",
               "D3DMetal no-command-list diagnostic",
-              "pDesc->Type == "
-              "D3D12_COMMAND_LIST_TYPE_DIRECT",
+              "if (false) "
+              "// D3DMetal no-queue diagnostic",
               "if (false) "
               "// D3DMetal no-command-list diagnostic",
           ]
@@ -359,10 +356,9 @@ jobs:
           print("Patch completed.")
           print("D3D12 effect runtime disabled.")
           print("Add-on events preserved.")
-          print("Only DIRECT command queue is proxied.")
+          print("No D3D12 command queues are proxied.")
           print("No D3D12 command lists are proxied.")
-          print("All command lists remain native D3DMetal objects.")
-          print("Compute and copy queues remain native.")
+          print("All queues and command lists remain native D3DMetal objects.")
           '@ | Set-Content `
             -Path patch_d3dmetal_direct_only.py `
             -Encoding utf8
@@ -370,15 +366,15 @@ jobs:
       - name: Verify patched source
         shell: pwsh
         run: |
-          Write-Host "===== NO-COMMAND-LIST CORE MARKERS ====="
+          Write-Host "===== NO-QUEUE NO-COMMAND-LIST CORE MARKERS ====="
           Select-String `
             -Path "source\dxgi\dxgi_swapchain.cpp" `
             -Pattern "D3DMetal direct-only core" `
             -Context 2,2
-          Write-Host "===== QUEUE PATCH ====="
+          Write-Host "===== QUEUE BYPASS PATCH ====="
           Select-String `
             -Path "source\d3d12\d3d12_device.cpp" `
-            -Pattern "D3DMetal direct-only queue proxy" `
+            -Pattern "D3DMetal no-queue diagnostic" `
             -Context 4,4
           Write-Host "===== COMMAND-LIST BYPASS PATCH ====="
           Select-String `
@@ -438,7 +434,7 @@ jobs:
           $dll = "$env:GITHUB_WORKSPACE\ReShade64.dll"
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
-          "Build: D3DMetal No-Command-List Core ReShade" |
+          "Build: D3DMetal No-Queue No-Command-List Core ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -454,7 +450,7 @@ jobs:
             Add-Content build-info.txt
           "Patch: Add-on events preserved" |
             Add-Content build-info.txt
-          "Patch: Only DIRECT queue proxied" |
+          "Patch: No D3D12 command queues proxied" |
             Add-Content build-info.txt
           "Patch: No D3D12 command lists proxied" |
             Add-Content build-info.txt
@@ -462,7 +458,7 @@ jobs:
       - name: Upload patched ReShade
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-no-command-list-${{ github.sha }}
+          name: reshade-d3dmetal-no-queue-no-command-list-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
