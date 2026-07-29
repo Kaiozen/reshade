@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal No-Queue No-Command-List Core x64
+name: Build ReShade D3DMetal No-Queue No-List Swapchain-Safe x64
 
 on:
   workflow_dispatch:
@@ -44,7 +44,7 @@ jobs:
           msbuild -version
           git rev-parse HEAD
           git submodule status --recursive
-      - name: Patch add-on core with native queues and native command lists
+      - name: Patch native queues/lists and remove proxy-only swap-chain flush
         shell: pwsh
         run: |
           @'
@@ -183,6 +183,41 @@ jobs:
               + present_replacement
               + present_block[d3d12_present.end():]
           )
+
+          # With command-queue proxying disabled, the D3D12 swap-chain
+          # must not cast the native D3DMetal queue to D3D12CommandQueue.
+          flush_pattern = re.compile(
+              r"(?m)^(?P<indent>[ \t]*)"
+              r"static_cast<D3D12CommandQueue \*>"
+              r"\(_direct3d_command_queue\)"
+              r"->flush_immediate_command_list\(\);"
+          )
+          flush_matches = list(
+              flush_pattern.finditer(present_block)
+          )
+          if len(flush_matches) != 1:
+              raise RuntimeError(
+                  "Expected exactly one proxy-only D3D12 queue flush, found "
+                  + str(len(flush_matches))
+                  + "."
+              )
+          queue_flush = flush_matches[0]
+          flush_indent = queue_flush.group("indent")
+          flush_replacement = (
+              flush_indent
+              + "reshade::log::message(\n"
+              + flush_indent
+              + "\treshade::log::level::info,\n"
+              + flush_indent
+              + "\t\"D3DMetal no-queue diagnostic: "
+              + "proxy-only swap-chain queue flush skipped.\");"
+          )
+          present_block = (
+              present_block[:queue_flush.start()]
+              + flush_replacement
+              + present_block[queue_flush.end():]
+          )
+
           source = (
               source[:init_start]
               + init_block
@@ -319,6 +354,8 @@ jobs:
               "D3D12 effect runtime reset skipped",
               "D3DMetal direct-only core: "
               "D3D12 effect runtime presentation skipped",
+              "D3DMetal no-queue diagnostic: "
+              "proxy-only swap-chain queue flush skipped",
               "reshade::addon_event::init_swapchain",
               "reshade::addon_event::destroy_swapchain",
               "reshade::addon_event::present",
@@ -343,6 +380,16 @@ jobs:
                       "Device patch verification failed: "
                       + required
                   )
+          if (
+              "static_cast<D3D12CommandQueue *>"
+              "(_direct3d_command_queue)"
+              "->flush_immediate_command_list();"
+              in swap_verify
+          ):
+              raise RuntimeError(
+                  "Proxy-only D3D12 queue flush is still present."
+              )
+
           remaining_present_calls = swap_verify.count(
               "reshade::present_effect_runtime(_impl);"
           )
@@ -358,6 +405,7 @@ jobs:
           print("Add-on events preserved.")
           print("No D3D12 command queues are proxied.")
           print("No D3D12 command lists are proxied.")
+          print("Proxy-only D3D12 swap-chain queue flush disabled.")
           print("All queues and command lists remain native D3DMetal objects.")
           '@ | Set-Content `
             -Path patch_d3dmetal_direct_only.py `
@@ -366,11 +414,16 @@ jobs:
       - name: Verify patched source
         shell: pwsh
         run: |
-          Write-Host "===== NO-QUEUE NO-COMMAND-LIST CORE MARKERS ====="
+          Write-Host "===== NO-QUEUE NO-LIST SWAPCHAIN-SAFE MARKERS ====="
           Select-String `
             -Path "source\dxgi\dxgi_swapchain.cpp" `
             -Pattern "D3DMetal direct-only core" `
             -Context 2,2
+          Write-Host "===== SWAP-CHAIN QUEUE FLUSH BYPASS ====="
+          Select-String `
+            -Path "source\dxgi\dxgi_swapchain.cpp" `
+            -Pattern "proxy-only swap-chain queue flush skipped" `
+            -Context 4,4
           Write-Host "===== QUEUE BYPASS PATCH ====="
           Select-String `
             -Path "source\d3d12\d3d12_device.cpp" `
@@ -434,7 +487,7 @@ jobs:
           $dll = "$env:GITHUB_WORKSPACE\ReShade64.dll"
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
-          "Build: D3DMetal No-Queue No-Command-List Core ReShade" |
+          "Build: D3DMetal No-Queue No-List Swapchain-Safe ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -452,13 +505,15 @@ jobs:
             Add-Content build-info.txt
           "Patch: No D3D12 command queues proxied" |
             Add-Content build-info.txt
+          "Patch: Proxy-only D3D12 swap-chain queue flush disabled" |
+            Add-Content build-info.txt
           "Patch: No D3D12 command lists proxied" |
             Add-Content build-info.txt
           Get-Content build-info.txt
       - name: Upload patched ReShade
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-no-queue-no-command-list-${{ github.sha }}
+          name: reshade-d3dmetal-no-queue-no-list-swapchain-safe-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
