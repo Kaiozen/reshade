@@ -1,4 +1,4 @@
-name: Symbolicate ReShade D3DMetal Native Runtime Bridge v2 crash v2
+name: Symbolicate ReShade D3DMetal Native Runtime Bridge v2 crash v3
 
 on:
   workflow_dispatch:
@@ -311,20 +311,87 @@ jobs:
 
           Write-Host "Source verification passed."
 
+      - name: Force linker MAP into the Release x64 project configuration
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("ReShade.vcxproj")
+          text = path.read_text(encoding="utf-8-sig")
+
+          group_anchor = "<ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">"
+          group_start = text.find(group_anchor)
+          if group_start < 0:
+              raise RuntimeError("Release|x64 ItemDefinitionGroup was not found")
+
+          group_end = text.find("</ItemDefinitionGroup>", group_start)
+          if group_end < 0:
+              raise RuntimeError("Release|x64 ItemDefinitionGroup is unterminated")
+
+          link_start = text.find("<Link>", group_start, group_end)
+          link_end = text.find("</Link>", link_start, group_end)
+          if link_start < 0 or link_end < 0:
+              raise RuntimeError("Release|x64 Link block was not found")
+
+          link_block = text[link_start:link_end]
+          if "<GenerateMapFile>" in link_block or "<MapFileName>" in link_block:
+              raise RuntimeError("Release|x64 Link block already contains MAP settings")
+
+          insertion = (
+              "<Link>\n"
+              "      <GenerateMapFile>true</GenerateMapFile>\n"
+              "      <MapFileName>$(ProjectDir)ReShade64.map</MapFileName>\n"
+              "      <MapExports>true</MapExports>"
+          )
+          text = text[:link_start] + text[link_start:].replace("<Link>", insertion, 1)
+          path.write_text(text, encoding="utf-8", newline="\n")
+
+          verify = path.read_text(encoding="utf-8")
+          release_group = verify[verify.find(group_anchor):verify.find("</ItemDefinitionGroup>", verify.find(group_anchor))]
+          required = [
+              "<GenerateMapFile>true</GenerateMapFile>",
+              "<MapFileName>$(ProjectDir)ReShade64.map</MapFileName>",
+              "<MapExports>true</MapExports>",
+              "<GenerateDebugInformation>false</GenerateDebugInformation>",
+              "<LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>",
+          ]
+          for marker in required:
+              if marker not in release_group:
+                  raise RuntimeError(f"Missing Release|x64 linker marker: {marker}")
+
+          print("MAP_PROJECT_PATCH_OK")
+          '@ | Set-Content -Path patch_linker_map.py -Encoding utf8
+
+          python patch_linker_map.py
+
+          Write-Host "===== PATCHED RELEASE X64 LINK BLOCK ====="
+          Select-String `
+            -Path "ReShade.vcxproj" `
+            -Pattern "GenerateMapFile|MapFileName|MapExports|GenerateDebugInformation|LinkTimeCodeGeneration" `
+            -Context 2,2
+
       - name: Build layout-matching Release DLL and linker map
         shell: pwsh
         run: |
-          # Keep the same optimized Release configuration as the working bridge.
-          # Generating a MAP file does not require changing the linker debug mode,
-          # so the code layout remains suitable for resolving the crash RVA.
+          # MAP generation is injected directly into the Release|x64 Link block.
+          # This avoids relying on global MSBuild properties, which are not Link item metadata.
           msbuild ReShade.sln `
             /t:Rebuild `
             /p:Configuration=Release `
             /p:Platform="64-bit" `
-            /p:GenerateMapFile=true `
-            /p:MapFileName="$env:GITHUB_WORKSPACE\ReShade64.map" `
             /m:1 `
             /verbosity:minimal
+
+          if (-not (Test-Path "ReShade64.map")) {
+            Write-Host "MAP candidates:"
+            Get-ChildItem -Path . -Filter "*.map" -Recurse -File |
+              ForEach-Object { Write-Host $_.FullName }
+            throw "ReShade64.map was not emitted even though /MAP was present in ReShade.vcxproj."
+          }
+
+          Write-Host "Linker MAP produced:"
+          Get-Item "ReShade64.map" | Format-List FullName,Length,LastWriteTimeUtc
 
       - name: Locate DLL, map, and compiler PDB
         shell: pwsh
@@ -345,14 +412,14 @@ jobs:
           Write-Host $dll.FullName
           Copy-Item $dll.FullName "$env:GITHUB_WORKSPACE\ReShade64.dll" -Force
 
-          if (-not (Test-Path "$env:GITHUB_WORKSPACE\ReShade64.map")) {
-            $map = Get-ChildItem -Path . -Filter "*.map" -Recurse -File |
-              Where-Object { $_.FullName -notmatch "\\deps\\" } |
-              Select-Object -First 1
-            if ($null -eq $map) {
-              throw "A linker map was not produced."
-            }
-            Copy-Item $map.FullName "$env:GITHUB_WORKSPACE\ReShade64.map" -Force
+          $projectMap = Join-Path $env:GITHUB_WORKSPACE "ReShade64.map"
+          if (-not (Test-Path $projectMap)) {
+            throw "The explicitly configured ReShade64.map was not produced."
+          }
+
+          $mapHeader = Get-Content $projectMap -TotalCount 30
+          if (-not ($mapHeader -match "Preferred load address")) {
+            throw "ReShade64.map does not look like an MSVC linker map."
           }
 
           # ReShade's Release build emits the compiler database as vc145.pdb,
@@ -583,7 +650,7 @@ jobs:
       - name: Upload symbolication package
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-native-runtime-bridge-v2-symbolication-v2-${{ github.sha }}
+          name: reshade-native-runtime-bridge-v2-symbolication-v3-${{ github.sha }}
           path: |
             ReShade64.dll
             ReShade64.map
