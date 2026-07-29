@@ -1,115 +1,174 @@
-name: Build ReShade main x64
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout ReShade and submodules
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 1
-
-      - name: Force-update submodules
+      - name: Patch D3DMetal query paths
         shell: pwsh
         run: |
-          git submodule sync --recursive
-          git submodule update --init --recursive --force
+          @'
+          from pathlib import Path
 
-          if (-not (Test-Path "deps\stb\stb_image.h")) {
-            throw "stb_image.h is missing after submodule checkout."
+          runtime_path = Path("source/runtime.cpp")
+          command_list_path = Path(
+              "source/d3d12/d3d12_command_list.cpp"
+          )
+
+          runtime = runtime_path.read_text(
+              encoding="utf-8-sig"
+          )
+
+          timestamp_line = (
+              "_timestamp_frequency = "
+              "graphics_queue->get_timestamp_frequency();"
+          )
+
+          if timestamp_line not in runtime:
+              raise RuntimeError(
+                  "Could not find timestamp-frequency line."
+              )
+
+          runtime = runtime.replace(
+              timestamp_line,
+              "_timestamp_frequency = 0; "
+              "// D3DMetal compatibility: disable GPU timing",
+              1,
+          )
+
+          query_heap_marker = (
+              "// Create optional query heap for time measurements\n"
+              "\tif (permutation_index == 0 &&"
+          )
+
+          if query_heap_marker not in runtime:
+              raise RuntimeError(
+                  "Could not find ReShade query-heap creation."
+              )
+
+          runtime = runtime.replace(
+              query_heap_marker,
+              "// D3DMetal compatibility: query heap disabled\n"
+              "\tif (false && permutation_index == 0 &&",
+              1,
+          )
+
+          runtime_path.write_text(
+              runtime,
+              encoding="utf-8",
+          )
+
+          source = command_list_path.read_text(
+              encoding="utf-8-sig"
+          )
+
+          def replace_method(
+              text: str,
+              start_marker: str,
+              next_marker: str,
+              replacement: str,
+          ) -> str:
+              start = text.find(start_marker)
+
+              if start < 0:
+                  raise RuntimeError(
+                      f"Missing method: {start_marker}"
+                  )
+
+              end = text.find(next_marker, start)
+
+              if end < 0:
+                  raise RuntimeError(
+                      f"Missing next method: {next_marker}"
+                  )
+
+              return (
+                  text[:start]
+                  + replacement.rstrip()
+                  + "\n\n"
+                  + text[end:]
+              )
+
+          begin_signature = (
+              "void STDMETHODCALLTYPE "
+              "D3D12GraphicsCommandList::BeginQuery("
+          )
+
+          end_signature = (
+              "void STDMETHODCALLTYPE "
+              "D3D12GraphicsCommandList::EndQuery("
+          )
+
+          resolve_signature = (
+              "void STDMETHODCALLTYPE "
+              "D3D12GraphicsCommandList::ResolveQueryData("
+          )
+
+          predication_signature = (
+              "void STDMETHODCALLTYPE "
+              "D3D12GraphicsCommandList::SetPredication("
+          )
+
+          source = replace_method(
+              source,
+              begin_signature,
+              end_signature,
+              r'''
+          void STDMETHODCALLTYPE D3D12GraphicsCommandList::BeginQuery(
+              ID3D12QueryHeap *pQueryHeap,
+              D3D12_QUERY_TYPE Type,
+              UINT Index)
+          {
+              // Bypass ReShade query events on D3DMetal.
+              _orig->BeginQuery(pQueryHeap, Type, Index);
           }
+          ''',
+          )
 
-          if (-not (Test-Path "deps\glad\glad\__init__.py")) {
-            throw "GLAD Python package is missing after submodule checkout."
+          source = replace_method(
+              source,
+              end_signature,
+              resolve_signature,
+              r'''
+          void STDMETHODCALLTYPE D3D12GraphicsCommandList::EndQuery(
+              ID3D12QueryHeap *pQueryHeap,
+              D3D12_QUERY_TYPE Type,
+              UINT Index)
+          {
+              // Bypass ReShade query events on D3DMetal.
+              _orig->EndQuery(pQueryHeap, Type, Index);
           }
+          ''',
+          )
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Set up MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Show environment
-        shell: pwsh
-        run: |
-          python --version
-          msbuild -version
-          git submodule status --recursive
-
-      - name: Build ReShade solution
-        shell: pwsh
-        run: |
-          msbuild ReShade.sln `
-            /t:Build `
-            /p:Configuration=Release `
-            /p:Platform="64-bit" `
-            /m:1 `
-            /verbosity:minimal
-
-      - name: Locate ReShade DLL
-        shell: pwsh
-        run: |
-          $dll = Get-ChildItem `
-            -Path . `
-            -Filter ReShade64.dll `
-            -Recurse `
-            -File |
-            Select-Object -First 1
-
-          if ($null -eq $dll) {
-            Write-Host "No ReShade64.dll found. Candidate files:"
-            Get-ChildItem -Path . -Recurse -File |
-              Where-Object {
-                $_.Name -like "ReShade*.dll" -or
-                $_.Name -like "ReShade*.exe"
-              } |
-              Select-Object FullName, Length |
-              Format-Table -AutoSize
-
-            throw "ReShade64.dll was not produced."
+          source = replace_method(
+              source,
+              resolve_signature,
+              predication_signature,
+              r'''
+          void STDMETHODCALLTYPE D3D12GraphicsCommandList::ResolveQueryData(
+              ID3D12QueryHeap *pQueryHeap,
+              D3D12_QUERY_TYPE Type,
+              UINT StartIndex,
+              UINT NumQueries,
+              ID3D12Resource *pDestinationBuffer,
+              UINT64 AlignedDestinationBufferOffset)
+          {
+              // Bypass ReShade query events on D3DMetal.
+              _orig->ResolveQueryData(
+                  pQueryHeap,
+                  Type,
+                  StartIndex,
+                  NumQueries,
+                  pDestinationBuffer,
+                  AlignedDestinationBufferOffset
+              );
           }
+          ''',
+          )
 
-          Write-Host "Found:"
-          Write-Host $dll.FullName
+          command_list_path.write_text(
+              source,
+              encoding="utf-8",
+          )
 
-          Copy-Item `
-            $dll.FullName `
-            "$env:GITHUB_WORKSPACE\ReShade64.dll"
+          print("D3DMetal query patch applied.")
+          print("GPU timing disabled.")
+          print("D3D12 query event interception disabled.")
+          '@ | Set-Content -Encoding utf8 patch_d3dmetal.py
 
-      - name: Record build information
-        shell: pwsh
-        run: |
-          "Repository: $env:GITHUB_REPOSITORY" |
-            Set-Content build-info.txt
-
-          "Commit: $env:GITHUB_SHA" |
-            Add-Content build-info.txt
-
-          "Built UTC: $([DateTime]::UtcNow.ToString('o'))" |
-            Add-Content build-info.txt
-
-          Get-FileHash `
-            "$env:GITHUB_WORKSPACE\ReShade64.dll" `
-            -Algorithm SHA256 |
-            Format-List |
-            Out-String |
-            Add-Content build-info.txt
-
-      - name: Upload ReShade build
-        uses: actions/upload-artifact@v4
-        with:
-          name: reshade-main-x64-${{ github.sha }}
-          path: |
-            ReShade64.dll
-            build-info.txt
-          if-no-files-found: error
+          python patch_d3dmetal.py
