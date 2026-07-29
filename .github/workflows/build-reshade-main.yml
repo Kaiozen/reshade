@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal Addon Core x64
+name: Build ReShade D3DMetal Direct-Only Core x64
 
 on:
   workflow_dispatch:
@@ -49,21 +49,29 @@ jobs:
           git rev-parse HEAD
           git submodule status --recursive
 
-      - name: Patch D3D12 add-on-core mode
+      - name: Patch add-on core and direct-only D3D12 wrappers
         shell: pwsh
         run: |
           @'
           from pathlib import Path
           import re
 
-          path = Path("source/dxgi/dxgi_swapchain.cpp")
+          # =================================================
+          # PATCH 1:
+          # Disable the ordinary D3D12 ReShade effect runtime
+          # while preserving the add-on event system.
+          # =================================================
 
-          if not path.is_file():
+          swapchain_path = Path(
+              "source/dxgi/dxgi_swapchain.cpp"
+          )
+
+          if not swapchain_path.is_file():
               raise RuntimeError(
                   "source/dxgi/dxgi_swapchain.cpp was not found."
               )
 
-          source = path.read_text(
+          source = swapchain_path.read_text(
               encoding="utf-8-sig"
           )
 
@@ -108,12 +116,6 @@ jobs:
               present_start:
           ]
 
-          # -------------------------------------------------
-          # Keep add-on init events active.
-          # Skip only normal ReShade FX/runtime initialization
-          # for DirectX 12.
-          # -------------------------------------------------
-
           init_old = (
               "\treshade::init_effect_runtime(_impl);"
           )
@@ -128,7 +130,7 @@ jobs:
               "\t{\n"
               "\t\treshade::log::message(\n"
               "\t\t\treshade::log::level::info,\n"
-              "\t\t\t\"D3DMetal add-on-core: "
+              "\t\t\t\"D3DMetal direct-only core: "
               "D3D12 effect runtime initialization skipped; "
               "add-on events remain active.\");\n"
               "\t}"
@@ -146,11 +148,6 @@ jobs:
               1,
           )
 
-          # -------------------------------------------------
-          # Keep add-on destroy_swapchain events active.
-          # Skip normal effect-runtime reset for DirectX 12.
-          # -------------------------------------------------
-
           reset_old = (
               "\treshade::reset_effect_runtime(_impl);"
           )
@@ -165,7 +162,7 @@ jobs:
               "\t{\n"
               "\t\treshade::log::message(\n"
               "\t\t\treshade::log::level::info,\n"
-              "\t\t\t\"D3DMetal add-on-core: "
+              "\t\t\t\"D3DMetal direct-only core: "
               "D3D12 effect runtime reset skipped.\");\n"
               "\t}"
           )
@@ -181,14 +178,6 @@ jobs:
               reset_new,
               1,
           )
-
-          # -------------------------------------------------
-          # There are three present_effect_runtime calls:
-          # D3D10, D3D11 and D3D12.
-          #
-          # Remove only the third one, which belongs to D3D12.
-          # Add-on present events remain untouched.
-          # -------------------------------------------------
 
           present_pattern = re.compile(
               r"(?m)^(?P<indent>[ \t]*)"
@@ -217,7 +206,7 @@ jobs:
               + indent
               + "\treshade::log::level::info,\n"
               + indent
-              + "\t\"D3DMetal add-on-core: "
+              + "\t\"D3DMetal direct-only core: "
               + "D3D12 effect runtime presentation skipped.\");"
           )
 
@@ -234,98 +223,243 @@ jobs:
               + present_block
           )
 
-          path.write_text(
+          swapchain_path.write_text(
               source,
               encoding="utf-8",
               newline="\n",
           )
 
-          verification = path.read_text(
+          # =================================================
+          # PATCH 2:
+          # Wrap only the DIRECT command queue.
+          #
+          # Compute and copy queues are returned directly from
+          # D3DMetal without a ReShade proxy object.
+          # =================================================
+
+          device_path = Path(
+              "source/d3d12/d3d12_device.cpp"
+          )
+
+          if not device_path.is_file():
+              raise RuntimeError(
+                  "source/d3d12/d3d12_device.cpp was not found."
+              )
+
+          device_source = device_path.read_text(
+              encoding="utf-8-sig"
+          )
+
+          queue_start = device_source.find(
+              "HRESULT STDMETHODCALLTYPE "
+              "D3D12Device::CreateCommandQueue("
+          )
+
+          queue_end = device_source.find(
+              "HRESULT STDMETHODCALLTYPE "
+              "D3D12Device::CreateCommandAllocator(",
+              queue_start,
+          )
+
+          if queue_start < 0 or queue_end < 0:
+              raise RuntimeError(
+                  "Could not isolate CreateCommandQueue."
+              )
+
+          queue_block = device_source[
+              queue_start:queue_end
+          ]
+
+          queue_condition = (
+              "if (SUCCEEDED(hr))"
+          )
+
+          queue_replacement = (
+              "if (SUCCEEDED(hr) && "
+              "pDesc->Type == "
+              "D3D12_COMMAND_LIST_TYPE_DIRECT) "
+              "// D3DMetal direct-only queue proxy"
+          )
+
+          if queue_block.count(queue_condition) != 1:
+              raise RuntimeError(
+                  "Expected exactly one successful queue "
+                  "condition, found "
+                  + str(queue_block.count(queue_condition))
+                  + "."
+              )
+
+          queue_block = queue_block.replace(
+              queue_condition,
+              queue_replacement,
+              1,
+          )
+
+          # =================================================
+          # PATCH 3:
+          # Wrap only DIRECT graphics command lists.
+          #
+          # Compute and copy lists remain native objects.
+          # =================================================
+
+          list_start = device_source.find(
+              "HRESULT STDMETHODCALLTYPE "
+              "D3D12Device::CreateCommandList("
+          )
+
+          list_end = device_source.find(
+              "HRESULT STDMETHODCALLTYPE "
+              "D3D12Device::CheckFeatureSupport(",
+              list_start,
+          )
+
+          if list_start < 0 or list_end < 0:
+              raise RuntimeError(
+                  "Could not isolate CreateCommandList."
+              )
+
+          list_block = device_source[
+              list_start:list_end
+          ]
+
+          list_condition = (
+              "if (type >= "
+              "D3D12_COMMAND_LIST_TYPE_DIRECT && "
+              "type <= "
+              "D3D12_COMMAND_LIST_TYPE_COPY)"
+          )
+
+          list_replacement = (
+              "if (type == "
+              "D3D12_COMMAND_LIST_TYPE_DIRECT) "
+              "// D3DMetal direct-only command-list proxy"
+          )
+
+          if list_block.count(list_condition) != 1:
+              raise RuntimeError(
+                  "Expected exactly one command-list "
+                  "type range, found "
+                  + str(list_block.count(list_condition))
+                  + "."
+              )
+
+          list_block = list_block.replace(
+              list_condition,
+              list_replacement,
+              1,
+          )
+
+          device_source = (
+              device_source[:queue_start]
+              + queue_block
+              + device_source[
+                  queue_end:list_start
+              ]
+              + list_block
+              + device_source[list_end:]
+          )
+
+          device_path.write_text(
+              device_source,
+              encoding="utf-8",
+              newline="\n",
+          )
+
+          # =================================================
+          # Verification
+          # =================================================
+
+          swap_verify = swapchain_path.read_text(
               encoding="utf-8"
           )
 
-          required_strings = [
-              "D3DMetal add-on-core: "
+          device_verify = device_path.read_text(
+              encoding="utf-8"
+          )
+
+          required_swapchain_strings = [
+              "D3DMetal direct-only core: "
               "D3D12 effect runtime initialization skipped",
-              "D3DMetal add-on-core: "
+              "D3DMetal direct-only core: "
               "D3D12 effect runtime reset skipped",
-              "D3DMetal add-on-core: "
+              "D3DMetal direct-only core: "
               "D3D12 effect runtime presentation skipped",
               "reshade::addon_event::init_swapchain",
               "reshade::addon_event::destroy_swapchain",
               "reshade::addon_event::present",
           ]
 
-          for required in required_strings:
-              if required not in verification:
+          for required in required_swapchain_strings:
+              if required not in swap_verify:
                   raise RuntimeError(
-                      "Patch verification failed: "
+                      "Swap-chain patch verification failed: "
                       + required
                   )
 
-          remaining_present_calls = verification.count(
+          required_device_strings = [
+              "D3DMetal direct-only queue proxy",
+              "D3DMetal direct-only command-list proxy",
+              "pDesc->Type == "
+              "D3D12_COMMAND_LIST_TYPE_DIRECT",
+              "type == "
+              "D3D12_COMMAND_LIST_TYPE_DIRECT",
+          ]
+
+          for required in required_device_strings:
+              if required not in device_verify:
+                  raise RuntimeError(
+                      "Device patch verification failed: "
+                      + required
+                  )
+
+          remaining_present_calls = swap_verify.count(
               "reshade::present_effect_runtime(_impl);"
           )
 
           if remaining_present_calls != 2:
               raise RuntimeError(
-                  "Expected two remaining effect-runtime "
-                  "present calls for D3D10/D3D11, found "
+                  "Expected two remaining D3D10/D3D11 "
+                  "present calls, found "
                   + str(remaining_present_calls)
                   + "."
               )
 
-          d3d12_guards = verification.count(
-              "_direct3d_version != "
-              "reshade::api::device_api::d3d12"
-          )
-
-          if d3d12_guards != 2:
-              raise RuntimeError(
-                  "Expected two D3D12 runtime guards, found "
-                  + str(d3d12_guards)
-                  + "."
-              )
-
-          print("D3DMetal add-on-core patch applied.")
-          print("D3D12 effect runtime initialization disabled.")
-          print("D3D12 effect runtime reset disabled.")
-          print("D3D12 effect runtime presentation disabled.")
-          print("D3D10 and D3D11 behavior unchanged.")
-          print("ReShade add-on events remain active.")
+          print("Patch completed.")
+          print("D3D12 effect runtime disabled.")
+          print("Add-on events preserved.")
+          print("Only DIRECT command queue is proxied.")
+          print("Only DIRECT command lists are proxied.")
+          print("Compute and copy queues/lists remain native.")
           '@ | Set-Content `
-            -Path patch_d3dmetal_addon_core.py `
+            -Path patch_d3dmetal_direct_only.py `
             -Encoding utf8
 
-          python patch_d3dmetal_addon_core.py
+          python patch_d3dmetal_direct_only.py
 
       - name: Verify patched source
         shell: pwsh
         run: |
-          Write-Host "===== ADD-ON CORE MARKERS ====="
+          Write-Host "===== DIRECT-ONLY CORE MARKERS ====="
 
           Select-String `
             -Path "source\dxgi\dxgi_swapchain.cpp" `
+            -Pattern "D3DMetal direct-only core" `
+            -Context 2,2
+
+          Write-Host "===== QUEUE PATCH ====="
+
+          Select-String `
+            -Path "source\d3d12\d3d12_device.cpp" `
+            -Pattern "D3DMetal direct-only queue proxy" `
+            -Context 4,4
+
+          Write-Host "===== COMMAND-LIST PATCH ====="
+
+          Select-String `
+            -Path "source\d3d12\d3d12_device.cpp" `
             -Pattern `
-              "D3DMetal add-on-core", `
-              "_direct3d_version != reshade::api::device_api::d3d12" `
-            -Context 3,3
-
-          Write-Host "===== ADD-ON EVENTS PRESERVED ====="
-
-          Select-String `
-            -Path "source\dxgi\dxgi_swapchain.cpp" `
-            -Pattern `
-              "addon_event::init_swapchain", `
-              "addon_event::destroy_swapchain", `
-              "addon_event::present" |
-            Select-Object -First 30
-
-          Write-Host "===== REMAINING EFFECT PRESENT CALLS ====="
-
-          Select-String `
-            -Path "source\dxgi\dxgi_swapchain.cpp" `
-            -Pattern "present_effect_runtime"
+              "D3DMetal direct-only command-list proxy" `
+            -Context 4,4
 
       - name: Build ReShade solution
         shell: pwsh
@@ -388,7 +522,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal Addon-Core ReShade" |
+          "Build: D3DMetal Direct-Only Core ReShade" |
             Set-Content build-info.txt
 
           "Repository: $env:GITHUB_REPOSITORY" |
@@ -406,16 +540,16 @@ jobs:
           "SHA256: $($hash.Hash)" |
             Add-Content build-info.txt
 
-          "Patch: D3D12 effect runtime initialization disabled" |
+          "Patch: D3D12 effect runtime disabled" |
             Add-Content build-info.txt
 
-          "Patch: D3D12 effect runtime reset disabled" |
+          "Patch: Add-on events preserved" |
             Add-Content build-info.txt
 
-          "Patch: D3D12 effect runtime presentation disabled" |
+          "Patch: Only DIRECT queue proxied" |
             Add-Content build-info.txt
 
-          "Patch: ReShade add-on events preserved" |
+          "Patch: Only DIRECT command lists proxied" |
             Add-Content build-info.txt
 
           Get-Content build-info.txt
@@ -423,7 +557,7 @@ jobs:
       - name: Upload patched ReShade
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-addon-core-${{ github.sha }}
+          name: reshade-d3dmetal-direct-only-core-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
