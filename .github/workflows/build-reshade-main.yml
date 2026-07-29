@@ -11,7 +11,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout ReShade and submodules
+      - name: Checkout ReShade
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -25,28 +25,62 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build 64-bit Release
+      - name: Show build environment
         shell: pwsh
         run: |
-          msbuild ReShade.sln `
-            /m `
-            /t:ReShade `
-            /p:Configuration=Release `
-            /p:Platform=x64
+          python --version
+          msbuild -version
+          Get-ChildItem -Name
 
-          if (-not (Test-Path "bin\x64\Release\ReShade64.dll")) {
-            throw "ReShade64.dll was not produced."
+      - name: Build ReShade x64
+        shell: pwsh
+        run: |
+          msbuild ReShade.vcxproj `
+            /m `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /verbosity:minimal
+
+      - name: Locate ReShade64 DLL
+        id: locate
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem `
+            -Path . `
+            -Filter ReShade64.dll `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if ($null -eq $dll) {
+            Write-Host "ReShade64.dll was not found. Files named ReShade*:"
+            Get-ChildItem -Path . -Filter "ReShade*" -Recurse |
+              Select-Object FullName, Length |
+              Format-Table -AutoSize
+            throw "Build completed without producing ReShade64.dll."
           }
+
+          Write-Host "Found DLL:"
+          Write-Host $dll.FullName
+
+          Copy-Item $dll.FullName `
+            "$env:GITHUB_WORKSPACE\ReShade64.dll"
 
       - name: Record build information
         shell: pwsh
         run: |
-          "Repository: $env:GITHUB_REPOSITORY" | Set-Content build-info.txt
-          "Commit: $env:GITHUB_SHA" | Add-Content build-info.txt
-          "Built UTC: $([DateTime]::UtcNow.ToString('o'))" | Add-Content build-info.txt
+          "Repository: $env:GITHUB_REPOSITORY" |
+            Set-Content build-info.txt
+
+          "Commit: $env:GITHUB_SHA" |
+            Add-Content build-info.txt
+
+          "Built UTC: $([DateTime]::UtcNow.ToString('o'))" |
+            Add-Content build-info.txt
 
           Get-FileHash `
-            "bin\x64\Release\ReShade64.dll" `
+            "$env:GITHUB_WORKSPACE\ReShade64.dll" `
             -Algorithm SHA256 |
             Format-List |
             Out-String |
@@ -57,7 +91,6 @@ jobs:
         with:
           name: reshade-main-x64-${{ github.sha }}
           path: |
-            bin/x64/Release/ReShade64.dll
-            bin/x64/Release/ReShade64.pdb
+            ReShade64.dll
             build-info.txt
           if-no-files-found: error
