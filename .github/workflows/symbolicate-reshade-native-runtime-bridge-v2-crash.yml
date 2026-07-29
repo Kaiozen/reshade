@@ -1,4 +1,4 @@
-name: Symbolicate ReShade D3DMetal Native Runtime Bridge v2 crash
+name: Symbolicate ReShade D3DMetal Native Runtime Bridge v2 crash v2
 
 on:
   workflow_dispatch:
@@ -311,22 +311,22 @@ jobs:
 
           Write-Host "Source verification passed."
 
-      - name: Build ReShade solution with symbols and map
+      - name: Build layout-matching Release DLL and linker map
         shell: pwsh
         run: |
+          # Keep the same optimized Release configuration as the working bridge.
+          # Generating a MAP file does not require changing the linker debug mode,
+          # so the code layout remains suitable for resolving the crash RVA.
           msbuild ReShade.sln `
             /t:Rebuild `
             /p:Configuration=Release `
             /p:Platform="64-bit" `
-            /p:GenerateDebugInformation=true `
-            /p:DebugSymbols=true `
-            /p:DebugType=full `
             /p:GenerateMapFile=true `
             /p:MapFileName="$env:GITHUB_WORKSPACE\ReShade64.map" `
             /m:1 `
             /verbosity:minimal
 
-      - name: Locate built ReShade DLL
+      - name: Locate DLL, map, and compiler PDB
         shell: pwsh
         run: |
           $dll = Get-ChildItem `
@@ -334,107 +334,86 @@ jobs:
             -Filter "ReShade64.dll" `
             -Recurse `
             -File |
-            Where-Object {
-              $_.FullName -notmatch "\\deps\\"
-            } |
+            Where-Object { $_.FullName -notmatch "\\deps\\" } |
             Select-Object -First 1
 
           if ($null -eq $dll) {
-            Write-Host "Candidate ReShade files:"
-            Get-ChildItem `
-              -Path . `
-              -Recurse `
-              -File |
-              Where-Object {
-                $_.Name -like "ReShade*.dll" -or
-                $_.Name -like "ReShade*.exe"
-              } |
-              Select-Object FullName, Length |
-              Format-Table -AutoSize
             throw "ReShade64.dll was not produced."
           }
 
           Write-Host "Built DLL:"
           Write-Host $dll.FullName
-          Copy-Item `
-            -Path $dll.FullName `
-            -Destination "$env:GITHUB_WORKSPACE\ReShade64.dll" `
-            -Force
+          Copy-Item $dll.FullName "$env:GITHUB_WORKSPACE\ReShade64.dll" -Force
 
-          $pdb = Get-ChildItem `
-            -Path . `
-            -Filter "ReShade64.pdb" `
-            -Recurse `
-            -File |
-            Where-Object { $_.FullName -notmatch "\\deps\\" } |
-            Select-Object -First 1
-
-          if ($null -eq $pdb) {
-            Write-Host "Candidate PDB files:"
-            Get-ChildItem -Path . -Filter "*.pdb" -Recurse -File |
-              Select-Object FullName, Length |
-              Format-Table -AutoSize
-            throw "ReShade64.pdb was not produced."
-          }
-
-          Write-Host "Built PDB:"
-          Write-Host $pdb.FullName
-          Copy-Item `
-            -Path $pdb.FullName `
-            -Destination "$env:GITHUB_WORKSPACE\ReShade64.pdb" `
-            -Force
-
-          $mapCandidates = Get-ChildItem `
-            -Path . `
-            -Filter "*.map" `
-            -Recurse `
-            -File
           if (-not (Test-Path "$env:GITHUB_WORKSPACE\ReShade64.map")) {
-            $map = $mapCandidates | Select-Object -First 1
+            $map = Get-ChildItem -Path . -Filter "*.map" -Recurse -File |
+              Where-Object { $_.FullName -notmatch "\\deps\\" } |
+              Select-Object -First 1
             if ($null -eq $map) {
               throw "A linker map was not produced."
             }
             Copy-Item $map.FullName "$env:GITHUB_WORKSPACE\ReShade64.map" -Force
           }
 
+          # ReShade's Release build emits the compiler database as vc145.pdb,
+          # rather than a linker database named ReShade64.pdb. Preserve it for
+          # symbol/name inspection, but use the linker MAP for RVA resolution.
+          $compilerPdb = Get-ChildItem `
+            -Path "intermediate\ReShade" `
+            -Filter "vc*.pdb" `
+            -Recurse `
+            -File `
+            -ErrorAction SilentlyContinue |
+            Sort-Object Length -Descending |
+            Select-Object -First 1
+
+          if ($null -ne $compilerPdb) {
+            Write-Host "Compiler PDB:"
+            Write-Host $compilerPdb.FullName
+            Copy-Item `
+              $compilerPdb.FullName `
+              "$env:GITHUB_WORKSPACE\ReShade-compiler.pdb" `
+              -Force
+          }
+          else {
+            Write-Warning "No compiler PDB was found. MAP symbolication will still run."
+          }
+
+          Write-Host "DLL SHA256:"
+          (Get-FileHash "$env:GITHUB_WORKSPACE\ReShade64.dll" -Algorithm SHA256).Hash
+          Write-Host "MAP size:"
+          (Get-Item "$env:GITHUB_WORKSPACE\ReShade64.map").Length
       - name: Symbolicate known crash RVA
         shell: pwsh
         run: |
           $dll = "$env:GITHUB_WORKSPACE\ReShade64.dll"
-          $pdb = "$env:GITHUB_WORKSPACE\ReShade64.pdb"
           $map = "$env:GITHUB_WORKSPACE\ReShade64.map"
+          $compilerPdb = "$env:GITHUB_WORKSPACE\ReShade-compiler.pdb"
           $targetRva = [Convert]::ToInt64("2F0FD", 16)
-          $targetVa = 0x180000000L + $targetRva
           $report = "$env:GITHUB_WORKSPACE\symbolication.txt"
+
+          $mapLines = Get-Content $map
+          $preferredBase = 0x180000000L
+          foreach ($line in $mapLines) {
+            if ($line -match 'Preferred load address is\s+([0-9A-Fa-f]+)') {
+              $preferredBase = [Convert]::ToInt64($matches[1], 16)
+              break
+            }
+          }
+          $targetVa = $preferredBase + $targetRva
 
           "Crash signature from ZZZ:" | Set-Content $report
           "Module RVA: 0x2F0FD" | Add-Content $report
+          "Preferred image base: 0x$($preferredBase.ToString('X'))" | Add-Content $report
           "Preferred-image VA: 0x$($targetVa.ToString('X'))" | Add-Content $report
-          "Expected original bridge DLL SHA256: 454BE9B641A33D51A1B7E0E0A7601C575B811DD4C00F217302586CD0AFF837C3" | Add-Content $report
-
+          "Original working bridge SHA256: 454BE9B641A33D51A1B7E0E0A7601C575B811DD4C00F217302586CD0AFF837C3" | Add-Content $report
           $builtHash = (Get-FileHash $dll -Algorithm SHA256).Hash
-          "Symbol build DLL SHA256: $builtHash" | Add-Content $report
-          "" | Add-Content $report
-
-          $symbolizerCandidates = @(
-            "C:\Program Files\LLVM\bin\llvm-symbolizer.exe",
-            "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin\llvm-symbolizer.exe"
-          )
-          $symbolizer = $symbolizerCandidates |
-            Where-Object { Test-Path $_ } |
-            Select-Object -First 1
-
-          if ($null -ne $symbolizer) {
-            "===== LLVM SYMBOLIZER =====" | Add-Content $report
-            & $symbolizer `
-              --obj=$dll `
-              --functions=linkage `
-              --inlines `
-              "0x$($targetVa.ToString('X'))" 2>&1 |
-              Tee-Object -FilePath $report -Append
+          "Rebuilt DLL SHA256: $builtHash" | Add-Content $report
+          if ($builtHash -eq "454BE9B641A33D51A1B7E0E0A7601C575B811DD4C00F217302586CD0AFF837C3") {
+            "LAYOUT CHECK: exact binary hash match" | Add-Content $report
           }
           else {
-            "llvm-symbolizer.exe was not found." | Add-Content $report
+            "LAYOUT CHECK: hash differs; verify crash instruction and nearest MAP symbol below" | Add-Content $report
           }
 
           "" | Add-Content $report
@@ -442,13 +421,15 @@ jobs:
 
           $bestValue = -1L
           $bestLine = $null
-          $allLines = Get-Content $map
-          foreach ($line in $allLines) {
-            if ($line -match '^\s*[0-9A-Fa-f]{4}:[0-9A-Fa-f]{8}\s+\S+\s+([0-9A-Fa-f]{16})\b') {
-              $value = [Convert]::ToInt64($matches[1], 16)
+          $bestSymbol = $null
+          foreach ($line in $mapLines) {
+            if ($line -match '^\s*[0-9A-Fa-f]{4}:[0-9A-Fa-f]{8}\s+(\S+)\s+([0-9A-Fa-f]{16})\b') {
+              $symbol = $matches[1]
+              $value = [Convert]::ToInt64($matches[2], 16)
               if ($value -le $targetVa -and $value -gt $bestValue) {
                 $bestValue = $value
                 $bestLine = $line
+                $bestSymbol = $symbol
               }
             }
           }
@@ -457,34 +438,90 @@ jobs:
             "Target VA: 0x$($targetVa.ToString('X'))" | Add-Content $report
             "Nearest symbol VA: 0x$($bestValue.ToString('X'))" | Add-Content $report
             "Distance: 0x$(($targetVa - $bestValue).ToString('X'))" | Add-Content $report
+            "Decorated symbol: $bestSymbol" | Add-Content $report
             $bestLine | Add-Content $report
+
+            $undnameCandidates = @(
+              "C:\Program Files\LLVM\bin\llvm-undname.exe",
+              "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin\llvm-undname.exe"
+            )
+            $undname = $undnameCandidates |
+              Where-Object { Test-Path $_ } |
+              Select-Object -First 1
+            if ($null -ne $undname) {
+              "Demangled symbol:" | Add-Content $report
+              & $undname $bestSymbol 2>&1 | Tee-Object -FilePath $report -Append
+            }
           }
           else {
             "No linker-map symbol could be parsed." | Add-Content $report
           }
 
           "" | Add-Content $report
-          "===== LLVM PDB PUBLIC/GLOBAL SYMBOL SEARCH =====" | Add-Content $report
-          $pdbutilCandidates = @(
-            "C:\Program Files\LLVM\bin\llvm-pdbutil.exe",
-            "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin\llvm-pdbutil.exe"
+          "===== DISASSEMBLY AROUND CRASH VA =====" | Add-Content $report
+          $objdumpCandidates = @(
+            "C:\Program Files\LLVM\bin\llvm-objdump.exe",
+            "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin\llvm-objdump.exe"
           )
-          $pdbutil = $pdbutilCandidates |
+          $objdump = $objdumpCandidates |
             Where-Object { Test-Path $_ } |
             Select-Object -First 1
-
-          if ($null -ne $pdbutil) {
-            & $pdbutil dump -publics -globals -symbols $pdb `
-              > "$env:GITHUB_WORKSPACE\pdb-symbols.txt"
-            "Full PDB symbol dump written to pdb-symbols.txt" | Add-Content $report
+          if ($null -ne $objdump) {
+            $startVa = $targetVa - 96
+            $stopVa = $targetVa + 96
+            & $objdump `
+              -d `
+              --start-address=$startVa `
+              --stop-address=$stopVa `
+              $dll 2>&1 |
+              Tee-Object -FilePath "$env:GITHUB_WORKSPACE\crash-disassembly.txt" |
+              Tee-Object -FilePath $report -Append
           }
           else {
-            "llvm-pdbutil.exe was not found." | Add-Content $report
+            "llvm-objdump.exe was not found." | Add-Content $report
+          }
+
+          "" | Add-Content $report
+          "===== COMPILER PDB SYMBOL DUMP =====" | Add-Content $report
+          if (Test-Path $compilerPdb) {
+            $pdbutilCandidates = @(
+              "C:\Program Files\LLVM\bin\llvm-pdbutil.exe",
+              "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin\llvm-pdbutil.exe"
+            )
+            $pdbutil = $pdbutilCandidates |
+              Where-Object { Test-Path $_ } |
+              Select-Object -First 1
+            if ($null -ne $pdbutil) {
+              & $pdbutil dump -publics -globals -symbols $compilerPdb `
+                > "$env:GITHUB_WORKSPACE\pdb-symbols.txt"
+              "Full compiler-PDB symbol dump written to pdb-symbols.txt" | Add-Content $report
+            }
+            else {
+              "llvm-pdbutil.exe was not found." | Add-Content $report
+            }
+          }
+          else {
+            "Compiler PDB was not available." | Add-Content $report
+          }
+
+          "" | Add-Content $report
+          "===== SOURCE OCCURRENCES FOR NEAREST SYMBOL =====" | Add-Content $report
+          if ($null -ne $bestSymbol) {
+            $needle = $bestSymbol
+            if ($needle.StartsWith("?")) {
+              $needle = ($needle -replace '^\?', '') -replace '@@.*$', ''
+            }
+            "Search token: $needle" | Add-Content $report
+            Get-ChildItem source -Recurse -Include *.cpp,*.hpp -File |
+              Select-String -SimpleMatch $needle -ErrorAction SilentlyContinue |
+              Select-Object -First 40 |
+              ForEach-Object { $_.ToString() } |
+              Tee-Object -FilePath "$env:GITHUB_WORKSPACE\source-symbol-search.txt" |
+              Tee-Object -FilePath $report -Append
           }
 
           Write-Host "===== SYMBOLICATION REPORT ====="
           Get-Content $report
-
       - name: Verify binary markers
         shell: pwsh
         run: |
@@ -546,13 +583,15 @@ jobs:
       - name: Upload symbolication package
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-native-runtime-bridge-v2-symbolication-${{ github.sha }}
+          name: reshade-native-runtime-bridge-v2-symbolication-v2-${{ github.sha }}
           path: |
             ReShade64.dll
-            ReShade64.pdb
             ReShade64.map
+            ReShade-compiler.pdb
             symbolication.txt
+            crash-disassembly.txt
             pdb-symbols.txt
+            source-symbol-search.txt
             build-info.txt
           if-no-files-found: error
           retention-days: 14
