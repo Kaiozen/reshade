@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal Delayed Init x64
+name: Build ReShade D3DMetal Addon Core x64
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ jobs:
           }
 
           if (-not (Test-Path "deps\glad\glad\__init__.py")) {
-            throw "ERROR: GLAD Python package is missing."
+            throw "ERROR: GLAD Python files are missing."
           }
 
           Write-Host "Submodules are complete."
@@ -49,11 +49,12 @@ jobs:
           git rev-parse HEAD
           git submodule status --recursive
 
-      - name: Patch delayed D3D12 runtime initialization
+      - name: Patch D3D12 add-on-core mode
         shell: pwsh
         run: |
           @'
           from pathlib import Path
+          import re
 
           path = Path("source/dxgi/dxgi_swapchain.cpp")
 
@@ -66,106 +67,164 @@ jobs:
               encoding="utf-8-sig"
           )
 
-          constructor_start_marker = (
-              "DXGISwapChain::DXGISwapChain("
-              "IDXGIFactory *factory, "
-              "D3D12CommandQueue *command_queue, "
-              "IDXGISwapChain3 *original)"
+          # -------------------------------------------------
+          # Locate the three runtime lifecycle functions.
+          # -------------------------------------------------
+
+          init_start = source.find(
+              "void DXGISwapChain::on_init("
           )
 
-          destructor_marker = (
-              "DXGISwapChain::~DXGISwapChain()"
+          reset_start = source.find(
+              "void DXGISwapChain::on_reset(",
+              init_start,
           )
 
-          constructor_start = source.find(
-              constructor_start_marker
+          present_start = source.find(
+              "void DXGISwapChain::on_present(",
+              reset_start,
           )
 
-          if constructor_start < 0:
+          if init_start < 0:
               raise RuntimeError(
-                  "Could not find the D3D12 swap-chain constructor."
+                  "Could not find DXGISwapChain::on_init."
               )
 
-          constructor_end = source.find(
-              destructor_marker,
-              constructor_start,
-          )
-
-          if constructor_end < 0:
+          if reset_start < 0:
               raise RuntimeError(
-                  "Could not locate the end of the D3D12 constructor."
+                  "Could not find DXGISwapChain::on_reset."
               )
 
-          constructor = source[
-              constructor_start:constructor_end
+          if present_start < 0:
+              raise RuntimeError(
+                  "Could not find DXGISwapChain::on_present."
+              )
+
+          init_block = source[
+              init_start:reset_start
           ]
 
-          original = (
-              "\treshade::create_effect_runtime("
-              "_impl, command_queue);\n"
-              "\ton_init(false);"
+          reset_block = source[
+              reset_start:present_start
+          ]
+
+          present_block = source[
+              present_start:
+          ]
+
+          # -------------------------------------------------
+          # Keep add-on init events, but skip the ordinary
+          # effect runtime on D3D12.
+          # -------------------------------------------------
+
+          init_old = (
+              "\treshade::init_effect_runtime(_impl);"
           )
 
-          replacement = (
-              "\treshade::create_effect_runtime("
-              "_impl, command_queue);\n"
-              "\n"
-              "\t// D3DMetal compatibility:\n"
-              "\t// ZZZ performs a startup ResizeBuffers call "
-              "shortly after creating\n"
-              "\t// the D3D12 swap chain. Initializing here "
-              "would immediately force\n"
-              "\t// ReShade to destroy and recreate all runtime "
-              "resources. Leave the\n"
-              "\t// runtime uninitialized until the successful "
-              "ResizeBuffers call invokes\n"
-              "\t// on_init(true).\n"
-              "\treshade::log::message(\n"
-              "\t\treshade::log::level::info,\n"
-              "\t\t\"D3DMetal compatibility: delaying initial "
-              "D3D12 runtime initialization until "
-              "ResizeBuffers.\");"
+          init_new = (
+              "\tif (_direct3d_version != "
+              "reshade::api::device_api::d3d12)\n"
+              "\t{\n"
+              "\t\treshade::init_effect_runtime(_impl);\n"
+              "\t}\n"
+              "\telse\n"
+              "\t{\n"
+              "\t\treshade::log::message(\n"
+              "\t\t\treshade::log::level::info,\n"
+              "\t\t\t\"D3DMetal add-on-core: "
+              "skipping D3D12 effect runtime "
+              "initialization; add-on events remain active.\");\n"
+              "\t}"
           )
 
-          if original not in constructor:
+          if init_block.count(init_old) != 1:
               raise RuntimeError(
-                  "Could not find the immediate D3D12 on_init call."
+                  "Expected exactly one init_effect_runtime "
+                  "call in on_init."
               )
 
-          patched_constructor = constructor.replace(
-              original,
-              replacement,
+          init_block = init_block.replace(
+              init_old,
+              init_new,
               1,
           )
 
-          if patched_constructor.count(
-              "delaying initial D3D12 runtime initialization"
-          ) != 1:
-              raise RuntimeError(
-                  "Delayed initialization marker count is invalid."
-              )
+          # -------------------------------------------------
+          # Skip effect-runtime reset only on D3D12.
+          # Add-on destroy_swapchain events remain untouched.
+          # -------------------------------------------------
 
-          source = (
-              source[:constructor_start]
-              + patched_constructor
-              + source[constructor_end:]
+          reset_old = (
+              "\treshade::reset_effect_runtime(_impl);"
           )
 
-          # Ensure the normal ResizeBuffers path remains intact.
-          required_resize_fragments = [
-              "HRESULT STDMETHODCALLTYPE "
-              "DXGISwapChain::ResizeBuffers(",
-              "on_reset(true);",
-              "_orig->ResizeBuffers(",
-              "on_init(true);",
-          ]
+          reset_new = (
+              "\tif (_direct3d_version != "
+              "reshade::api::device_api::d3d12)\n"
+              "\t{\n"
+              "\t\treshade::reset_effect_runtime(_impl);\n"
+              "\t}"
+          )
 
-          for fragment in required_resize_fragments:
-              if fragment not in source:
-                  raise RuntimeError(
-                      "Required ResizeBuffers code is missing: "
-                      + fragment
-                  )
+          if reset_block.count(reset_old) != 1:
+              raise RuntimeError(
+                  "Expected exactly one reset_effect_runtime "
+                  "call in on_reset."
+              )
+
+          reset_block = reset_block.replace(
+              reset_old,
+              reset_new,
+              1,
+          )
+
+          # -------------------------------------------------
+          # Keep add-on present events, but skip the normal
+          # ReShade effect-runtime presentation on D3D12.
+          #
+          # There are currently three calls, corresponding
+          # to D3D10, D3D11 and D3D12.
+          # -------------------------------------------------
+
+          present_pattern = re.compile(
+              r"(?m)^([ \t]*)"
+              r"reshade::present_effect_runtime"
+              r"\(_impl\);"
+          )
+
+          present_matches = list(
+              present_pattern.finditer(present_block)
+          )
+
+          if len(present_matches) != 3:
+              raise RuntimeError(
+                  "Expected three present_effect_runtime calls, "
+                  f"found {len(present_matches)}."
+              )
+
+          def replace_present(match):
+              indent = match.group(1)
+
+              return (
+                  f"{indent}if (_direct3d_version != "
+                  "reshade::api::device_api::d3d12)\n"
+                  f"{indent}{{\n"
+                  f"{indent}\treshade::present_effect_runtime"
+                  "(_impl);\n"
+                  f"{indent}}"
+              )
+
+          present_block = present_pattern.sub(
+              replace_present,
+              present_block,
+          )
+
+          source = (
+              source[:init_start]
+              + init_block
+              + reset_block
+              + present_block
+          )
 
           path.write_text(
               source,
@@ -177,37 +236,60 @@ jobs:
               encoding="utf-8"
           )
 
-          if (
-              "D3DMetal compatibility: delaying initial "
-              "D3D12 runtime initialization"
-              not in verification
-          ):
+          required = [
+              "D3DMetal add-on-core: skipping D3D12 "
+              "effect runtime initialization",
+              "reshade::addon_event::init_swapchain",
+              "reshade::addon_event::destroy_swapchain",
+              "reshade::addon_event::present",
+          ]
+
+          for text in required:
+              if text not in verification:
+                  raise RuntimeError(
+                      "Patch verification failed: " + text
+                  )
+
+          if verification.count(
+              "_direct3d_version != "
+              "reshade::api::device_api::d3d12"
+          ) != 5:
               raise RuntimeError(
-                  "Patch verification failed."
+                  "Expected five D3D12 runtime guards."
               )
 
-          print("Delayed D3D12 initialization patch applied.")
-          print(
-              "The runtime will initialize after ZZZ's "
-              "first successful ResizeBuffers call."
-          )
+          print("D3DMetal add-on-core patch applied.")
+          print("D3D12 effect runtime initialization disabled.")
+          print("D3D12 effect runtime reset disabled.")
+          print("D3D12 effect runtime presentation disabled.")
+          print("ReShade add-on events remain active.")
           '@ | Set-Content `
-            -Path patch_delayed_d3d12_init.py `
+            -Path patch_d3dmetal_addon_core.py `
             -Encoding utf8
 
-          python patch_delayed_d3d12_init.py
+          python patch_d3dmetal_addon_core.py
 
       - name: Verify patched source
         shell: pwsh
         run: |
-          Write-Host "===== DELAYED INIT PATCH ====="
+          Write-Host "===== ADD-ON CORE MARKER ====="
 
           Select-String `
             -Path "source\dxgi\dxgi_swapchain.cpp" `
             -Pattern `
-              "delaying initial D3D12 runtime", `
-              "on_init\(true\)" `
-            -Context 4,4
+              "D3DMetal add-on-core", `
+              "_direct3d_version != reshade::api::device_api::d3d12" `
+            -Context 3,3
+
+          Write-Host "===== ADD-ON EVENTS PRESERVED ====="
+
+          Select-String `
+            -Path "source\dxgi\dxgi_swapchain.cpp" `
+            -Pattern `
+              "addon_event::init_swapchain", `
+              "addon_event::destroy_swapchain", `
+              "addon_event::present" |
+            Select-Object -First 20
 
       - name: Build ReShade solution
         shell: pwsh
@@ -233,7 +315,7 @@ jobs:
             Select-Object -First 1
 
           if ($null -eq $dll) {
-            Write-Host "Candidate files:"
+            Write-Host "Candidate ReShade files:"
 
             Get-ChildItem `
               -Path . `
@@ -270,7 +352,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal Delayed-Init ReShade" |
+          "Build: D3DMetal Addon-Core ReShade" |
             Set-Content build-info.txt
 
           "Repository: $env:GITHUB_REPOSITORY" |
@@ -288,10 +370,10 @@ jobs:
           "SHA256: $($hash.Hash)" |
             Add-Content build-info.txt
 
-          "Patch: Initial D3D12 runtime initialization delayed" |
+          "Patch: D3D12 effect runtime disabled" |
             Add-Content build-info.txt
 
-          "Patch: Runtime initializes after first ResizeBuffers" |
+          "Patch: ReShade add-on events preserved" |
             Add-Content build-info.txt
 
           Get-Content build-info.txt
@@ -299,7 +381,7 @@ jobs:
       - name: Upload patched ReShade
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-delayed-init-${{ github.sha }}
+          name: reshade-d3dmetal-addon-core-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
