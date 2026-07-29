@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal No-Queue No-List Swapchain-Safe x64
+name: Build ReShade D3DMetal Native-Device DXGI-Retained x64
 
 on:
   workflow_dispatch:
@@ -44,7 +44,7 @@ jobs:
           msbuild -version
           git rev-parse HEAD
           git submodule status --recursive
-      - name: Patch native queues/lists and remove proxy-only swap-chain flush
+      - name: Patch native device, queues/lists, and swap-chain safety
         shell: pwsh
         run: |
           @'
@@ -338,6 +338,124 @@ jobs:
               encoding="utf-8",
               newline="\n",
           )
+
+          # =================================================
+          # PATCH 4:
+          # Return the native D3DMetal ID3D12Device.
+          #
+          # D3D12CreateDevice remains intercepted for logging, but
+          # ReShade's D3D12Device COM proxy is not constructed.
+          # DXGI factory/swap-chain interception remains enabled.
+          # =================================================
+          d3d12_entry_path = Path(
+              "source/d3d12/d3d12.cpp"
+          )
+          if not d3d12_entry_path.is_file():
+              raise RuntimeError(
+                  "source/d3d12/d3d12.cpp was not found."
+              )
+
+          d3d12_entry_source = d3d12_entry_path.read_text(
+              encoding="utf-8-sig"
+          )
+
+          create_start = d3d12_entry_source.find(
+              "D3D12CreateDevice("
+          )
+          if create_start < 0:
+              raise RuntimeError(
+                  "Could not find D3D12CreateDevice."
+              )
+
+          create_body_start = d3d12_entry_source.find(
+              "{",
+              create_start,
+          )
+          if create_body_start < 0:
+              raise RuntimeError(
+                  "Could not find D3D12CreateDevice body."
+              )
+
+          depth = 0
+          create_body_end = -1
+          for index in range(
+              create_body_start,
+              len(d3d12_entry_source),
+          ):
+              char = d3d12_entry_source[index]
+              if char == "{":
+                  depth += 1
+              elif char == "}":
+                  depth -= 1
+                  if depth == 0:
+                      create_body_end = index + 1
+                      break
+
+          if create_body_end < 0:
+              raise RuntimeError(
+                  "Could not isolate D3D12CreateDevice body."
+              )
+
+          create_block = d3d12_entry_source[
+              create_start:create_body_end
+          ]
+
+          proxy_pos = create_block.find(
+              "new D3D12Device"
+          )
+          if proxy_pos < 0:
+              raise RuntimeError(
+                  "Could not find D3D12Device proxy construction."
+              )
+
+          candidate_conditions = list(
+              re.finditer(
+                  r"(?m)^(?P<indent>[ \t]*)if\s*\([^\n]*\)",
+                  create_block[:proxy_pos],
+              )
+          )
+          if not candidate_conditions:
+              raise RuntimeError(
+                  "Could not find the condition guarding "
+                  "D3D12Device proxy construction."
+              )
+
+          guard = candidate_conditions[-1]
+          guard_text = guard.group(0)
+          guard_indent = guard.group("indent")
+
+          guard_replacement = (
+              guard_indent
+              + "reshade::log::message(\n"
+              + guard_indent
+              + "\treshade::log::level::info,\n"
+              + guard_indent
+              + "\t\"D3DMetal native-device diagnostic: "
+              + "returning original ID3D12Device; "
+              + "ReShade D3D12Device proxy skipped.\");\n"
+              + guard_indent
+              + "if (false) "
+              + "// D3DMetal native-device diagnostic"
+          )
+
+          create_block = (
+              create_block[:guard.start()]
+              + guard_replacement
+              + create_block[guard.end():]
+          )
+
+          d3d12_entry_source = (
+              d3d12_entry_source[:create_start]
+              + create_block
+              + d3d12_entry_source[create_body_end:]
+          )
+
+          d3d12_entry_path.write_text(
+              d3d12_entry_source,
+              encoding="utf-8",
+              newline="\n",
+          )
+
           # =================================================
           # Verification
           # =================================================
@@ -345,6 +463,10 @@ jobs:
               encoding="utf-8"
           )
           device_verify = device_path.read_text(
+              encoding="utf-8"
+          )
+
+          d3d12_entry_verify = d3d12_entry_path.read_text(
               encoding="utf-8"
           )
           required_swapchain_strings = [
@@ -380,6 +502,21 @@ jobs:
                       "Device patch verification failed: "
                       + required
                   )
+
+          required_entry_strings = [
+              "D3DMetal native-device diagnostic: "
+              "returning original ID3D12Device",
+              "if (false) "
+              "// D3DMetal native-device diagnostic",
+              "new D3D12Device",
+          ]
+
+          for required in required_entry_strings:
+              if required not in d3d12_entry_verify:
+                  raise RuntimeError(
+                      "D3D12 entry-point patch verification failed: "
+                      + required
+                  )
           if (
               "static_cast<D3D12CommandQueue *>"
               "(_direct3d_command_queue)"
@@ -406,7 +543,9 @@ jobs:
           print("No D3D12 command queues are proxied.")
           print("No D3D12 command lists are proxied.")
           print("Proxy-only D3D12 swap-chain queue flush disabled.")
-          print("All queues and command lists remain native D3DMetal objects.")
+          print("ReShade D3D12Device proxy construction disabled.")
+          print("DXGI factory and swap-chain interception retained.")
+          print("All device, queue and command-list objects remain native.")
           '@ | Set-Content `
             -Path patch_d3dmetal_direct_only.py `
             -Encoding utf8
@@ -414,11 +553,16 @@ jobs:
       - name: Verify patched source
         shell: pwsh
         run: |
-          Write-Host "===== NO-QUEUE NO-LIST SWAPCHAIN-SAFE MARKERS ====="
+          Write-Host "===== NATIVE-DEVICE DXGI-RETAINED MARKERS ====="
           Select-String `
             -Path "source\dxgi\dxgi_swapchain.cpp" `
             -Pattern "D3DMetal direct-only core" `
             -Context 2,2
+          Write-Host "===== NATIVE DEVICE BYPASS ====="
+          Select-String `
+            -Path "source\d3d12\d3d12.cpp" `
+            -Pattern "D3DMetal native-device diagnostic" `
+            -Context 4,8
           Write-Host "===== SWAP-CHAIN QUEUE FLUSH BYPASS ====="
           Select-String `
             -Path "source\dxgi\dxgi_swapchain.cpp" `
@@ -487,7 +631,7 @@ jobs:
           $dll = "$env:GITHUB_WORKSPACE\ReShade64.dll"
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
-          "Build: D3DMetal No-Queue No-List Swapchain-Safe ReShade" |
+          "Build: D3DMetal Native-Device DXGI-Retained ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -507,13 +651,17 @@ jobs:
             Add-Content build-info.txt
           "Patch: Proxy-only D3D12 swap-chain queue flush disabled" |
             Add-Content build-info.txt
+          "Patch: ReShade D3D12Device proxy construction disabled" |
+            Add-Content build-info.txt
+          "Patch: DXGI factory and swap-chain interception retained" |
+            Add-Content build-info.txt
           "Patch: No D3D12 command lists proxied" |
             Add-Content build-info.txt
           Get-Content build-info.txt
       - name: Upload patched ReShade
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-no-queue-no-list-swapchain-safe-${{ github.sha }}
+          name: reshade-d3dmetal-native-device-dxgi-retained-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
