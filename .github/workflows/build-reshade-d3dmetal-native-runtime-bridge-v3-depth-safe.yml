@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal Native Runtime Bridge v3 Depth-Safe x64
+name: Build ReShade D3DMetal Native Runtime Bridge v3.1 Depth-Safe Path-Fixed x64
 
 on:
   workflow_dispatch:
@@ -133,7 +133,10 @@ jobs:
           # Symbolication of ZZZ crash RVA 0x2F0FD resolved to generic_depth_addon.obj!on_present+0x5D,
           # where the callback dereferenced a null object returned by the native D3DMetal path.
           # Color-only ReShade effects remain available; depth-dependent effects are intentionally unavailable.
-          rel = 'source/generic_depth_addon.cpp'
+          rel = 'examples/09-depth/generic_depth_addon.cpp'
+          if not (ROOT / rel).is_file():
+              raise RuntimeError(f'Generic Depth source was not found at the verified project path: {rel}')
+          print(f'GENERIC_DEPTH_SOURCE={rel}')
           s = read(rel)
           pattern = re.compile(r'(?ms)^(?:static\s+)?void\s+on_present\s*\([^;{}]*\)\s*\{')
           matches = list(pattern.finditer(s))
@@ -253,7 +256,7 @@ jobs:
                   'GPU timestamp queries disabled',
                   'if (_disable_timestamp_queries)',
               ],
-              'source/generic_depth_addon.cpp': [
+              'examples/09-depth/generic_depth_addon.cpp': [
                   'D3DMetal depth-safe bridge: Generic Depth present callback disabled after null-object symbolication.',
                   'd3dmetal_depth_safe_marker_logged',
                   '\n\treturn;',
@@ -310,7 +313,7 @@ jobs:
 
           Write-Host "===== GENERIC DEPTH CRASH BYPASS ====="
           Select-String `
-            -Path "source\generic_depth_addon.cpp" `
+            -Path "examples\09-depth\generic_depth_addon.cpp" `
             -Pattern "Generic Depth present callback disabled" `
             -Context 6,5
 
@@ -422,7 +425,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal Native D3D12 Runtime Bridge v3 Depth-Safe ReShade" |
+          "Build: D3DMetal Native D3D12 Runtime Bridge v3.1 Depth-Safe Path-Fixed ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -460,7 +463,7 @@ jobs:
       - name: Upload native runtime bridge
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-native-runtime-bridge-v3-depth-safe-${{ github.sha }}
+          name: reshade-d3dmetal-native-runtime-bridge-v3-1-depth-safe-path-fixed-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
