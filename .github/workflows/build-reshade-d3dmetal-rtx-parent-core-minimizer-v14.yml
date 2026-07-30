@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal RTX Parent-Core Semantic Minimizer v14.0 x64
+name: Build ReShade D3DMetal RTX Parent-Core Semantic Minimizer v14.1 x64
 
 on:
   workflow_dispatch:
@@ -2488,7 +2488,6 @@ jobs:
             "D3DMetal RTX subset linker v11: RETRY BEGIN",
             "D3DMetal RTX subset linker v11: RETRY END",
             "D3DMetal RTX subset linker v11: WORKAROUND ACTIVE",
-            "parent-plus-collection subset linking with incremental, config, aggregate, and direct-flatten fallbacks",
             "D3DMetal RTX parent-core minimizer v14: PARENT DETAIL",
             "D3DMetal RTX parent-core minimizer v14: PARENT EXPORT",
             "D3DMetal RTX parent-core minimizer v14: PARENT ASSOCIATION",
