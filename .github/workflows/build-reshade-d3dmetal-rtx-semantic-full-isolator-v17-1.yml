@@ -2894,17 +2894,18 @@ jobs:
           )
 
           required = [
-              "D3DMetal RTX semantic isolator v17.1: CANDIDATE",
-              "D3DMetal RTX semantic isolator v17.1: TARGET",
-              "D3DMetal RTX semantic isolator v17.1: PRE CALL",
-              "D3DMetal RTX semantic isolator v17.1: POST CALL",
-              "strategy=10 name=full-minus-global-root",
+              "D3DMetal RTX semantic isolator v17.1: ",
+              "CANDIDATE call=%llu target=%u consumed=%u",
+              "TARGET call=%llu strategy=10",
+              "PRE CALL call=%llu strategy=10",
+              "POST CALL call=%llu strategy=10",
+              "name=full-minus-global-root",
           ]
 
           for marker in required:
               if marker not in text:
                   raise RuntimeError(
-                      f"missing v17.1 source marker: {marker}"
+                      f"missing v17.1 source fragment: {marker}"
                   )
 
           path.write_text(
