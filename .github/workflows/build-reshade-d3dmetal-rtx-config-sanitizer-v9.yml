@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal RTX Config Sanitizer v9.1 x64
+name: Build ReShade D3DMetal RTX Config Sanitizer v9.1b x64
 
 on:
   workflow_dispatch:
@@ -1291,7 +1291,7 @@ jobs:
             "D3DMetal RTX config sanitizer v9.1: RETRY BEGIN",
             "D3DMetal RTX config sanitizer v9.1: RETRY END",
             "D3DMetal RTX config sanitizer v9.1: WORKAROUND ACTIVE",
-            "state-object flag sanitizer with promotion, aggregate, and direct-flatten fallbacks"
+            "pipeline-as-collection promotion with aggregate and direct-flatten fallbacks"
           )
           foreach ($marker in $required) {
             if (-not ($ascii.Contains($marker) -or $utf16.Contains($marker))) {
@@ -1307,7 +1307,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal RTX Config Sanitizer v9.1 ReShade" |
+          "Build: D3DMetal RTX Config Sanitizer v9.1b ReShade (packaging-marker fix)" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -1349,7 +1349,7 @@ jobs:
       - name: Upload native runtime bridge
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-rtx-config-sanitizer-v9-1-${{ github.sha }}
+          name: reshade-d3dmetal-rtx-config-sanitizer-v9-1b-${{ github.sha }}
           path: |
             ReShade64.dll
             build-info.txt
