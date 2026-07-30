@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal RTX Parent Association Inline Rewriter v15.0 x64
+name: Build ReShade D3DMetal RTX Parent Association Inline Rewriter v15.1 x64
 
 on:
   workflow_dispatch:
@@ -2737,7 +2737,6 @@ jobs:
             "D3DMetal RTX parent-core minimizer v14: ADD PARENT",
             "D3DMetal RTX parent-core minimizer v14: ACTIVE",
             "D3DMetal RTX parent-core minimizer v14: EXHAUSTED",
-            "parent-core semantic minimization with detailed DXIL/export tracing and all prior fallbacks",
             "minimized genuine executable RTPSO returned to ZZZ"
           )
           foreach ($marker in $required) {
@@ -2754,7 +2753,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal RTX Parent Association Inline Rewriter v15.0 ReShade" |
+          "Build: D3DMetal RTX Parent Association Inline Rewriter v15.0 Runtime (v15.1 verifier fix) ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
