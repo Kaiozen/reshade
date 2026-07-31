@@ -565,8 +565,7 @@ helper = r'''
         uint64_t state_call,
         uint64_t rewritten_ray_index)
     {
-        if (!dispatch_rays || !rewritten || command_list == nullptr || rewritten_ray_index < 2 ||
-            !s_v38_readback_complete.load(std::memory_order_acquire))
+        if (!dispatch_rays || !rewritten || command_list == nullptr || rewritten_ray_index < 2)
             return;
         bool expected = false;
         if (!s_v39_capture_claimed.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
