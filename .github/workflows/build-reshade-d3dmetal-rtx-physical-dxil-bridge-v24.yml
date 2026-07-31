@@ -3348,10 +3348,11 @@ jobs:
             -Raw
 
           $required = @(
-            "D3DMetal RTX physical DXIL bridge v24: MATCH",
-            "D3DMetal RTX physical DXIL bridge v24: READY",
-            "D3DMetal RTX physical DXIL bridge v24: POST",
-            "D3DMetal RTX physical DXIL bridge v24: ACTIVE",
+            "D3DMetal RTX physical DXIL bridge v24: ",
+            "MATCH call=%llu subobject=%llu ",
+            "READY call=%llu replacement_bytes=%llu ",
+            "POST call=%llu hr=%s raw=0x%08X object=%p.",
+            "ACTIVE call=%llu; physically pruned ",
             "g_v24_original_parent_dxil",
             "g_v24_pruned_parent_dxil",
             "try_v24_physical_dxil_bridge(",
