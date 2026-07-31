@@ -31,6 +31,16 @@ jobs:
           }
           Write-Host "Submodules are complete."
 
+      - name: Checkout V24 assets from workflow branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          path: _v24_assets
+          sparse-checkout: |
+            .github/v24
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -3328,7 +3338,7 @@ jobs:
       - name: Patch physical DXIL bridge v24
         shell: pwsh
         run: |
-          python ".github/v24/patch_physical_dxil_bridge_v24.py"
+          python "_v24_assets/.github/v24/patch_physical_dxil_bridge_v24.py"
 
       - name: Verify v24 source and descriptor harness
         shell: pwsh
