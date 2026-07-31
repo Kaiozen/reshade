@@ -13,6 +13,22 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Initialize report directory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item `
+            -ItemType Directory `
+            -Path "$PWD\report" `
+            -Force |
+            Out-Null
+
+          "WORKFLOW_STARTED" |
+            Set-Content `
+              -LiteralPath "$PWD\report\workflow-started.txt" `
+              -Encoding utf8
+
       - name: Download previous V23 artifact
         shell: pwsh
         env:
@@ -20,20 +36,44 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          New-Item -ItemType Directory -Path "$PWD\input" -Force | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Path "$PWD\input" `
+            -Force |
+            Out-Null
 
-          gh run download 30604112182 --repo "${{ github.repository }}" --name "zzz-dxil-assembler-pruner-v23" --dir "$PWD\input"
+          gh run download `
+            30604112182 `
+            --repo "${{ github.repository }}" `
+            --name "zzz-dxil-assembler-pruner-v23" `
+            --dir "$PWD\input"
 
-          $ir = Get-ChildItem -LiteralPath "$PWD\input" -Recurse -Filter "modified-no-sort.ll" | Select-Object -First 1
-
-          if (-not $ir) {
-            throw "modified-no-sort.ll was not found in artifact 30604112182."
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to download V23 artifact."
           }
 
-          Copy-Item -LiteralPath $ir.FullName -Destination "$PWD\modified-no-sort.ll" -Force
+          $ir = Get-ChildItem `
+            -LiteralPath "$PWD\input" `
+            -Recurse `
+            -Filter "modified-no-sort.ll" |
+            Select-Object -First 1
+
+          if (-not $ir) {
+            throw "modified-no-sort.ll was not found in the V23 artifact."
+          }
+
+          Copy-Item `
+            -LiteralPath $ir.FullName `
+            -Destination "$PWD\modified-no-sort.ll" `
+            -Force
+
+          $inputSize = (
+            Get-Item `
+              -LiteralPath "$PWD\modified-no-sort.ll"
+          ).Length
 
           Write-Host "INPUT_IR=$($ir.FullName)"
-          Write-Host "INPUT_IR_SIZE=$((Get-Item -LiteralPath "$PWD\modified-no-sort.ll").Length)"
+          Write-Host "INPUT_IR_SIZE=$inputSize"
 
       - name: Remove orphaned SortRay declarations
         shell: pwsh
@@ -47,40 +87,83 @@ jobs:
             throw "modified-no-sort.ll is missing."
           }
 
-          $lines = Get-Content -LiteralPath $inputPath
+          $lines = [IO.File]::ReadAllLines($inputPath)
 
           $typeLine = '%struct.RWByteAddressBuffer = type { i32 }'
-          $sortNeedle = '?_RWRaySortBuffer@@3URWByteAddressBuffer@@A'
-          $helperNeedle = 'declare %dx.types.Handle @dx.op.createHandleForLib.struct.RWByteAddressBuffer'
+
+          $sortNeedle = `
+            '?_RWRaySortBuffer@@3URWByteAddressBuffer@@A'
+
+          $helperNeedle = `
+            'declare %dx.types.Handle @dx.op.createHandleForLib.struct.RWByteAddressBuffer'
+
           $oldListLine = '!19 = !{!20, !21}'
           $newListLine = '!19 = !{!21}'
-          $oldUavPrefix = '!21 = !{i32 1, %"class.RWStructuredBuffer<RayIntersection_Data>"*'
-          $newUavPrefix = '!21 = !{i32 0, %"class.RWStructuredBuffer<RayIntersection_Data>"*'
 
-          $typeCount = @($lines | Where-Object { $_ -eq $typeLine }).Count
-          $sortReferenceCount = @($lines | Where-Object { $_.Contains($sortNeedle) }).Count
-          $helperCount = @($lines | Where-Object { $_.Contains($helperNeedle) }).Count
-          $listCount = @($lines | Where-Object { $_ -eq $oldListLine }).Count
-          $uavCount = @($lines | Where-Object { $_.StartsWith($oldUavPrefix) }).Count
+          $oldUavPrefix = `
+            '!21 = !{i32 1, %"class.RWStructuredBuffer<RayIntersection_Data>"*'
+
+          $newUavPrefix = `
+            '!21 = !{i32 0, %"class.RWStructuredBuffer<RayIntersection_Data>"*'
+
+          $typeCount = @(
+            $lines |
+              Where-Object {
+                $_ -eq $typeLine
+              }
+          ).Count
+
+          $sortReferenceCount = @(
+            $lines |
+              Where-Object {
+                $_.Contains($sortNeedle)
+              }
+          ).Count
+
+          $helperCount = @(
+            $lines |
+              Where-Object {
+                $_.Contains($helperNeedle)
+              }
+          ).Count
+
+          $listCount = @(
+            $lines |
+              Where-Object {
+                $_ -eq $oldListLine
+              }
+          ).Count
+
+          $uavCount = @(
+            $lines |
+              Where-Object {
+                $_.StartsWith($oldUavPrefix)
+              }
+          ).Count
 
           if ($typeCount -ne 1) {
-            throw "Expected one RWByteAddressBuffer type declaration, found $typeCount."
+            throw `
+              "Expected one RWByteAddressBuffer type declaration, found $typeCount."
           }
 
           if ($sortReferenceCount -ne 2) {
-            throw "Expected two RWRaySortBuffer references, found $sortReferenceCount."
+            throw `
+              "Expected two RWRaySortBuffer references, found $sortReferenceCount."
           }
 
           if ($helperCount -ne 1) {
-            throw "Expected one RWByteAddressBuffer helper declaration, found $helperCount."
+            throw `
+              "Expected one RWByteAddressBuffer helper declaration, found $helperCount."
           }
 
           if ($listCount -ne 1) {
-            throw "Expected one UAV metadata list, found $listCount."
+            throw `
+              "Expected one UAV metadata list, found $listCount."
           }
 
           if ($uavCount -ne 1) {
-            throw "Expected one surviving UAV metadata entry, found $uavCount."
+            throw `
+              "Expected one surviving UAV metadata entry, found $uavCount."
           }
 
           $cleaned = [System.Collections.Generic.List[string]]::new()
@@ -104,7 +187,12 @@ jobs:
             }
 
             if ($line.StartsWith($oldUavPrefix)) {
-              $cleaned.Add($line.Replace('!21 = !{i32 1, ', '!21 = !{i32 0, '))
+              $normalizedLine = $line.Replace(
+                '!21 = !{i32 1, ',
+                '!21 = !{i32 0, '
+              )
+
+              $cleaned.Add($normalizedLine)
               continue
             }
 
@@ -117,7 +205,7 @@ jobs:
             [Text.UTF8Encoding]::new($false)
           )
 
-          $verify = Get-Content -LiteralPath $outputPath -Raw
+          $verify = [IO.File]::ReadAllText($outputPath)
 
           if ($verify.Contains('%struct.RWByteAddressBuffer')) {
             throw "RWByteAddressBuffer type or reference remains."
@@ -127,7 +215,11 @@ jobs:
             throw "RWRaySortBuffer reference remains."
           }
 
-          if ($verify.Contains('createHandleForLib.struct.RWByteAddressBuffer')) {
+          if (
+            $verify.Contains(
+              'createHandleForLib.struct.RWByteAddressBuffer'
+            )
+          ) {
             throw "RWByteAddressBuffer helper remains."
           }
 
@@ -143,45 +235,98 @@ jobs:
             throw "Surviving UAV resource ID was not normalized."
           }
 
+          $cleanedSize = (
+            Get-Item `
+              -LiteralPath $outputPath
+          ).Length
+
           Write-Host "ORPHANED_SORTRAY_DECLARATIONS_REMOVED"
-          Write-Host "CLEANED_IR_SIZE=$((Get-Item -LiteralPath $outputPath).Length)"
+          Write-Host "CLEANED_IR_SIZE=$cleanedSize"
 
       - name: Download official Microsoft DXC v1.9.2607
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $url = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2607/dxc_2026_07_29.zip"
+          $url = `
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2607/dxc_2026_07_29.zip"
 
-          Invoke-WebRequest -Uri $url -OutFile "$PWD\dxc.zip"
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "$PWD\dxc.zip"
 
-          $zipHash = (Get-FileHash -LiteralPath "$PWD\dxc.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zipHash = (
+            Get-FileHash `
+              -LiteralPath "$PWD\dxc.zip" `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
 
-          if ($zipHash -ne "a1dfb116ba3eeae6a1582291b53a8e7bf65ad760676bd3194685c8f7367cd241") {
+          $expectedHash = `
+            "a1dfb116ba3eeae6a1582291b53a8e7bf65ad760676bd3194685c8f7367cd241"
+
+          if ($zipHash -ne $expectedHash) {
             throw "DXC archive SHA256 mismatch: $zipHash"
           }
 
-          Expand-Archive -LiteralPath "$PWD\dxc.zip" -DestinationPath "$PWD\dxc" -Force
+          Expand-Archive `
+            -LiteralPath "$PWD\dxc.zip" `
+            -DestinationPath "$PWD\dxc" `
+            -Force
 
-          $dxcExe = Get-ChildItem -LiteralPath "$PWD\dxc" -Recurse -Filter "dxc.exe" | Where-Object { $_.FullName -match '\\bin\\x64\\dxc\.exe$' } | Select-Object -First 1
+          $dxcExe = Get-ChildItem `
+            -LiteralPath "$PWD\dxc" `
+            -Recurse `
+            -Filter "dxc.exe" |
+            Where-Object {
+              $_.FullName -match '\\bin\\x64\\dxc\.exe$'
+            } |
+            Select-Object -First 1
 
           if (-not $dxcExe) {
             throw "dxc.exe was not found."
           }
 
           $x64Dir = $dxcExe.DirectoryName
-          $binDir = Split-Path -Path $x64Dir -Parent
-          $root = Split-Path -Path $binDir -Parent
-          $dxvExe = Join-Path -Path $x64Dir -ChildPath "dxv.exe"
+
+          $binDir = Split-Path `
+            -Path $x64Dir `
+            -Parent
+
+          $root = Split-Path `
+            -Path $binDir `
+            -Parent
+
+          $dxvExe = Join-Path `
+            -Path $x64Dir `
+            -ChildPath "dxv.exe"
 
           if (-not (Test-Path -LiteralPath $dxvExe)) {
             throw "dxv.exe was not found."
           }
 
-          "DXC_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "DXC_EXE=$($dxcExe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "DXV_EXE=$dxvExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "DXC_X64_DIR=$x64Dir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DXC_ROOT=$root" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          "DXC_EXE=$($dxcExe.FullName)" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          "DXV_EXE=$dxvExe" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          "DXC_X64_DIR=$x64Dir" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
           Write-Host "DXC_ROOT=$root"
           Write-Host "DXC_EXE=$($dxcExe.FullName)"
@@ -193,202 +338,318 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $cpp = @'
-#include <windows.h>
-#include <dxcapi.h>
-#include <wrl/client.h>
+          #include <windows.h>
+          #include <dxcapi.h>
+          #include <wrl/client.h>
 
-#include <iostream>
+          #include <iomanip>
+          #include <iostream>
 
-using Microsoft::WRL::ComPtr;
+          using Microsoft::WRL::ComPtr;
 
-static int fail_with_hresult(const char *message, HRESULT hr)
-{
-    std::cerr
-        << message
-        << " HRESULT=0x"
-        << std::hex
-        << std::uppercase
-        << static_cast<unsigned long>(hr)
-        << std::endl;
+          static int fail_with_hresult(
+              const char *message,
+              HRESULT hr)
+          {
+              std::cerr
+                  << message
+                  << " HRESULT=0x"
+                  << std::hex
+                  << std::uppercase
+                  << static_cast<unsigned long>(hr)
+                  << std::endl;
 
-    return 1;
-}
+              return 1;
+          }
 
-int wmain(int argc, wchar_t **argv)
-{
-    if (argc != 3)
-    {
-        std::wcerr
-            << L"Usage: assemble_cleaned.exe input.ll output.dxil"
-            << std::endl;
+          int wmain(
+              int argc,
+              wchar_t **argv)
+          {
+              if (argc != 3)
+              {
+                  std::wcerr
+                      << L"Usage: assemble_cleaned.exe input.ll output.dxil"
+                      << std::endl;
 
-        return 2;
-    }
+                  return 2;
+              }
 
-    const HRESULT init =
-        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+              const HRESULT init =
+                  CoInitializeEx(
+                      nullptr,
+                      COINIT_MULTITHREADED);
 
-    const bool should_uninitialize = SUCCEEDED(init);
+              const bool should_uninitialize =
+                  SUCCEEDED(init);
 
-    if (FAILED(init) && init != RPC_E_CHANGED_MODE)
-        return fail_with_hresult("CoInitializeEx failed", init);
+              if (
+                  FAILED(init) &&
+                  init != RPC_E_CHANGED_MODE)
+              {
+                  return fail_with_hresult(
+                      "CoInitializeEx failed",
+                      init);
+              }
 
-    auto finish = [should_uninitialize](int code)
-    {
-        if (should_uninitialize)
-            CoUninitialize();
+              ComPtr<IDxcLibrary> library;
 
-        return code;
-    };
+              HRESULT hr =
+                  DxcCreateInstance(
+                      CLSID_DxcLibrary,
+                      IID_PPV_ARGS(
+                          library.GetAddressOf()));
 
-    ComPtr<IDxcLibrary> library;
+              if (FAILED(hr))
+              {
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    HRESULT hr = DxcCreateInstance(
-        CLSID_DxcLibrary,
-        IID_PPV_ARGS(library.GetAddressOf()));
+                  return fail_with_hresult(
+                      "Create IDxcLibrary failed",
+                      hr);
+              }
 
-    if (FAILED(hr))
-        return finish(fail_with_hresult("Create IDxcLibrary failed", hr));
+              ComPtr<IDxcAssembler> assembler;
 
-    ComPtr<IDxcAssembler> assembler;
+              hr =
+                  DxcCreateInstance(
+                      CLSID_DxcAssembler,
+                      IID_PPV_ARGS(
+                          assembler.GetAddressOf()));
 
-    hr = DxcCreateInstance(
-        CLSID_DxcAssembler,
-        IID_PPV_ARGS(assembler.GetAddressOf()));
+              if (FAILED(hr))
+              {
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    if (FAILED(hr))
-        return finish(fail_with_hresult("Create IDxcAssembler failed", hr));
+                  return fail_with_hresult(
+                      "Create IDxcAssembler failed",
+                      hr);
+              }
 
-    UINT32 code_page = CP_UTF8;
+              UINT32 code_page = CP_UTF8;
 
-    ComPtr<IDxcBlobEncoding> input;
+              ComPtr<IDxcBlobEncoding> input;
 
-    hr = library->CreateBlobFromFile(
-        argv[1],
-        &code_page,
-        input.GetAddressOf());
+              hr =
+                  library->CreateBlobFromFile(
+                      argv[1],
+                      &code_page,
+                      input.GetAddressOf());
 
-    if (FAILED(hr))
-        return finish(fail_with_hresult("Load input IR failed", hr));
+              if (FAILED(hr))
+              {
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    ComPtr<IDxcOperationResult> result;
+                  return fail_with_hresult(
+                      "Load input IR failed",
+                      hr);
+              }
 
-    hr = assembler->AssembleToContainer(
-        input.Get(),
-        result.GetAddressOf());
+              ComPtr<IDxcOperationResult> result;
 
-    if (FAILED(hr))
-        return finish(fail_with_hresult("AssembleToContainer failed", hr));
+              hr =
+                  assembler->AssembleToContainer(
+                      input.Get(),
+                      result.GetAddressOf());
 
-    HRESULT status = E_FAIL;
+              if (FAILED(hr))
+              {
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    hr = result->GetStatus(&status);
+                  return fail_with_hresult(
+                      "AssembleToContainer failed",
+                      hr);
+              }
 
-    if (FAILED(hr))
-        return finish(fail_with_hresult("GetStatus failed", hr));
+              HRESULT status = E_FAIL;
 
-    if (FAILED(status))
-    {
-        ComPtr<IDxcBlobEncoding> errors;
+              hr = result->GetStatus(&status);
 
-        if (SUCCEEDED(result->GetErrorBuffer(errors.GetAddressOf())) &&
-            errors &&
-            errors->GetBufferPointer() &&
-            errors->GetBufferSize() > 0)
-        {
-            std::cerr.write(
-                static_cast<const char *>(errors->GetBufferPointer()),
-                static_cast<std::streamsize>(errors->GetBufferSize()));
+              if (FAILED(hr))
+              {
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-            std::cerr << std::endl;
-        }
+                  return fail_with_hresult(
+                      "GetStatus failed",
+                      hr);
+              }
 
-        return finish(
-            fail_with_hresult(
-                "DXIL assembler rejected cleaned IR",
-                status));
-    }
+              if (FAILED(status))
+              {
+                  ComPtr<IDxcBlobEncoding> errors;
 
-    ComPtr<IDxcBlob> output;
+                  if (
+                      SUCCEEDED(
+                          result->GetErrorBuffer(
+                              errors.GetAddressOf())) &&
+                      errors &&
+                      errors->GetBufferPointer() &&
+                      errors->GetBufferSize() > 0)
+                  {
+                      std::cerr.write(
+                          static_cast<const char *>(
+                              errors->GetBufferPointer()),
+                          static_cast<std::streamsize>(
+                              errors->GetBufferSize()));
 
-    hr = result->GetResult(output.GetAddressOf());
+                      std::cerr << std::endl;
+                  }
 
-    if (FAILED(hr))
-        return finish(fail_with_hresult("GetResult failed", hr));
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    if (!output ||
-        !output->GetBufferPointer() ||
-        output->GetBufferSize() == 0)
-    {
-        std::cerr << "Assembler returned an empty container." << std::endl;
-        return finish(1);
-    }
+                  return fail_with_hresult(
+                      "DXIL assembler rejected cleaned IR",
+                      status);
+              }
 
-    HANDLE file = CreateFileW(
-        argv[2],
-        GENERIC_WRITE,
-        0,
-        nullptr,
-        CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
+              ComPtr<IDxcBlob> output;
 
-    if (file == INVALID_HANDLE_VALUE)
-    {
-        std::cerr
-            << "CreateFileW failed. Win32="
-            << GetLastError()
-            << std::endl;
+              hr =
+                  result->GetResult(
+                      output.GetAddressOf());
 
-        return finish(1);
-    }
+              if (FAILED(hr))
+              {
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    const DWORD size =
-        static_cast<DWORD>(output->GetBufferSize());
+                  return fail_with_hresult(
+                      "GetResult failed",
+                      hr);
+              }
 
-    DWORD written = 0;
+              if (
+                  !output ||
+                  !output->GetBufferPointer() ||
+                  output->GetBufferSize() == 0)
+              {
+                  std::cerr
+                      << "Assembler returned an empty container."
+                      << std::endl;
 
-    const BOOL write_ok = WriteFile(
-        file,
-        output->GetBufferPointer(),
-        size,
-        &written,
-        nullptr);
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    CloseHandle(file);
+                  return 1;
+              }
 
-    if (!write_ok || written != size)
-    {
-        std::cerr
-            << "WriteFile failed. Win32="
-            << GetLastError()
-            << " written="
-            << written
-            << " expected="
-            << size
-            << std::endl;
+              HANDLE file =
+                  CreateFileW(
+                      argv[2],
+                      GENERIC_WRITE,
+                      0,
+                      nullptr,
+                      CREATE_ALWAYS,
+                      FILE_ATTRIBUTE_NORMAL,
+                      nullptr);
 
-        return finish(1);
-    }
+              if (file == INVALID_HANDLE_VALUE)
+              {
+                  std::cerr
+                      << "CreateFileW failed. Win32="
+                      << GetLastError()
+                      << std::endl;
 
-    std::cout
-        << "CLEANED_DXIL_BYTES="
-        << output->GetBufferSize()
-        << std::endl;
+                  if (should_uninitialize)
+                      CoUninitialize();
 
-    std::cout
-        << "DXIL_CLEANUP_ASSEMBLY_OK"
-        << std::endl;
+                  return 1;
+              }
 
-    return finish(0);
-}
-'@
+              const DWORD size =
+                  static_cast<DWORD>(
+                      output->GetBufferSize());
+
+              DWORD written = 0;
+
+              const BOOL write_ok =
+                  WriteFile(
+                      file,
+                      output->GetBufferPointer(),
+                      size,
+                      &written,
+                      nullptr);
+
+              const DWORD write_error =
+                  write_ok
+                      ? ERROR_SUCCESS
+                      : GetLastError();
+
+              CloseHandle(file);
+
+              if (
+                  !write_ok ||
+                  written != size)
+              {
+                  std::cerr
+                      << "WriteFile failed. Win32="
+                      << write_error
+                      << " written="
+                      << written
+                      << " expected="
+                      << size
+                      << std::endl;
+
+                  if (should_uninitialize)
+                      CoUninitialize();
+
+                  return 1;
+              }
+
+              std::cout
+                  << "CLEANED_DXIL_BYTES="
+                  << output->GetBufferSize()
+                  << std::endl;
+
+              std::cout
+                  << "DXIL_CLEANUP_ASSEMBLY_OK"
+                  << std::endl;
+
+              if (should_uninitialize)
+                  CoUninitialize();
+
+              return 0;
+          }
+          '@
+
+          $cppLines = $cpp -split "`r?`n"
+
+          $normalizedLines = foreach ($line in $cppLines) {
+            if ($line.StartsWith("          ")) {
+              $line.Substring(10)
+            }
+            else {
+              $line
+            }
+          }
+
+          $normalizedCpp = (
+            $normalizedLines -join "`n"
+          ).TrimStart("`n")
 
           [IO.File]::WriteAllText(
             "$PWD\assemble_cleaned.cpp",
-            $cpp,
+            $normalizedCpp,
             [Text.UTF8Encoding]::new($false)
           )
+
+          $writtenCpp = [IO.File]::ReadAllText(
+            "$PWD\assemble_cleaned.cpp"
+          )
+
+          if (
+            -not $writtenCpp.Contains(
+              "using Microsoft::WRL::ComPtr;"
+            )
+          ) {
+            throw "Assembler source write verification failed."
+          }
 
           Write-Host "ASSEMBLER_SOURCE_WRITTEN"
 
@@ -403,19 +664,39 @@ int wmain(int argc, wchar_t **argv)
         run: |
           $ErrorActionPreference = "Stop"
 
-          Copy-Item -LiteralPath "$env:DXC_X64_DIR\dxcompiler.dll" -Destination "$PWD\dxcompiler.dll" -Force
+          Copy-Item `
+            -LiteralPath "$env:DXC_X64_DIR\dxcompiler.dll" `
+            -Destination "$PWD\dxcompiler.dll" `
+            -Force
 
-          if (Test-Path -LiteralPath "$env:DXC_X64_DIR\dxil.dll") {
-            Copy-Item -LiteralPath "$env:DXC_X64_DIR\dxil.dll" -Destination "$PWD\dxil.dll" -Force
+          $dxilDll = Join-Path `
+            -Path $env:DXC_X64_DIR `
+            -ChildPath "dxil.dll"
+
+          if (Test-Path -LiteralPath $dxilDll) {
+            Copy-Item `
+              -LiteralPath $dxilDll `
+              -Destination "$PWD\dxil.dll" `
+              -Force
           }
 
-          & "$PWD\assemble_cleaned.exe" "$PWD\cleaned-no-sort.ll" "$PWD\execute-plus-miss-cleaned.dxil"
+          & "$PWD\assemble_cleaned.exe" `
+            "$PWD\cleaned-no-sort.ll" `
+            "$PWD\execute-plus-miss-cleaned.dxil"
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "DXIL assembler failed with exit code $LASTEXITCODE."
+          $assemblerExit = $LASTEXITCODE
+
+          if ($assemblerExit -ne 0) {
+            throw `
+              "DXIL assembler failed with exit code $assemblerExit."
           }
 
-          if (-not (Test-Path -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil")) {
+          if (
+            -not (
+              Test-Path `
+                -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil"
+            )
+          ) {
             throw "Cleaned DXIL container was not created."
           }
 
@@ -426,20 +707,64 @@ int wmain(int argc, wchar_t **argv)
         run: |
           $ErrorActionPreference = "Continue"
 
-          New-Item -ItemType Directory -Path "$PWD\report" -Force | Out-Null
+          & "$env:DXC_EXE" `
+            -dumpbin `
+            "$PWD\execute-plus-miss-cleaned.dxil" `
+            1> "$PWD\report\cleaned-dump.txt" `
+            2> "$PWD\report\cleaned-dump-errors.txt"
 
-          & "$env:DXC_EXE" -dumpbin "$PWD\execute-plus-miss-cleaned.dxil" 1> "$PWD\report\cleaned-dump.txt" 2> "$PWD\report\cleaned-dump-errors.txt"
           $dumpExit = $LASTEXITCODE
 
-          & "$env:DXV_EXE" "$PWD\execute-plus-miss-cleaned.dxil" 1> "$PWD\report\dxv.txt" 2>&1
+          & "$env:DXV_EXE" `
+            "$PWD\execute-plus-miss-cleaned.dxil" `
+            1> "$PWD\report\dxv.txt" `
+            2>&1
+
           $dxvExit = $LASTEXITCODE
 
-          $outputSize = (Get-Item -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil").Length
-          $outputHash = (Get-FileHash -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $outputSize = (
+            Get-Item `
+              -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil"
+          ).Length
 
-          $sortCount = @(Select-String -LiteralPath "$PWD\report\cleaned-dump.txt" -Pattern "ExecuteTrace_SortRay" -SimpleMatch).Count
-          $executeCount = @(Select-String -LiteralPath "$PWD\report\cleaned-dump.txt" -Pattern "ExecuteTrace" -SimpleMatch).Count
-          $missCount = @(Select-String -LiteralPath "$PWD\report\cleaned-dump.txt" -Pattern "Miss" -SimpleMatch).Count
+          $outputHash = (
+            Get-FileHash `
+              -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil" `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          if (
+            Test-Path `
+              -LiteralPath "$PWD\report\cleaned-dump.txt"
+          ) {
+            $dumpText = Get-Content `
+              -LiteralPath "$PWD\report\cleaned-dump.txt" `
+              -Raw
+          }
+          else {
+            $dumpText = ""
+          }
+
+          $sortCount = (
+            [regex]::Matches(
+              $dumpText,
+              "ExecuteTrace_SortRay"
+            )
+          ).Count
+
+          $executeCount = (
+            [regex]::Matches(
+              $dumpText,
+              "ExecuteTrace"
+            )
+          ).Count
+
+          $missCount = (
+            [regex]::Matches(
+              $dumpText,
+              "Miss"
+            )
+          ).Count
 
           if (
             $dumpExit -eq 0 -and
@@ -463,15 +788,37 @@ int wmain(int argc, wchar_t **argv)
             "MISS_OCCURRENCES=$missCount"
             "SORTRAY_OCCURRENCES=$sortCount"
             "RESULT=$result"
-          ) | Set-Content -LiteralPath "$PWD\report\validation.txt" -Encoding utf8
+          ) |
+            Set-Content `
+              -LiteralPath "$PWD\report\validation.txt" `
+              -Encoding utf8
 
-          Copy-Item -LiteralPath "$PWD\modified-no-sort.ll" -Destination "$PWD\report\modified-no-sort.ll" -Force
-          Copy-Item -LiteralPath "$PWD\cleaned-no-sort.ll" -Destination "$PWD\report\cleaned-no-sort.ll" -Force
-          Copy-Item -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil" -Destination "$PWD\report\execute-plus-miss-cleaned.dxil" -Force
-          Copy-Item -LiteralPath "$PWD\assemble_cleaned.cpp" -Destination "$PWD\report\assemble_cleaned.cpp" -Force
+          Copy-Item `
+            -LiteralPath "$PWD\modified-no-sort.ll" `
+            -Destination "$PWD\report\modified-no-sort.ll" `
+            -Force
 
-          Get-Content -LiteralPath "$PWD\report\validation.txt"
-          Get-Content -LiteralPath "$PWD\report\dxv.txt" -ErrorAction SilentlyContinue
+          Copy-Item `
+            -LiteralPath "$PWD\cleaned-no-sort.ll" `
+            -Destination "$PWD\report\cleaned-no-sort.ll" `
+            -Force
+
+          Copy-Item `
+            -LiteralPath "$PWD\execute-plus-miss-cleaned.dxil" `
+            -Destination "$PWD\report\execute-plus-miss-cleaned.dxil" `
+            -Force
+
+          Copy-Item `
+            -LiteralPath "$PWD\assemble_cleaned.cpp" `
+            -Destination "$PWD\report\assemble_cleaned.cpp" `
+            -Force
+
+          Get-Content `
+            -LiteralPath "$PWD\report\validation.txt"
+
+          Get-Content `
+            -LiteralPath "$PWD\report\dxv.txt" `
+            -ErrorAction SilentlyContinue
 
           if ($result -ne "PASS") {
             throw "Microsoft DXIL validation failed."
