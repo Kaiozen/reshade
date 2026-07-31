@@ -47,7 +47,6 @@ jobs:
             .github/v33
             .github/v34
             .github/v36
-            .github/v37
             .github/v41
           sparse-checkout-cone-mode: false
           fetch-depth: 1
@@ -195,317 +194,102 @@ jobs:
 
 
 
-      - name: Rewrite real ExecuteTrace FP64 sequences to exact FP32 division v37
+      - name: Build and Microsoft-validate fresh minimal no-output DXIL v41
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
-          $sourceDir = "$PWD\_v26_assets\.github\v37"
-          $v30SourceDir = "$PWD\_v26_assets\.github\v30"
-          $inputDir = "$PWD\v30-inputs"
-          $reportDir = "$PWD\v30-dxil-report"
-          $irDir = "$PWD\v30-ir-generated"
-          $generatedDir = "$PWD\.github\v30\generated"
-          New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-          New-Item -ItemType Directory -Force -Path $irDir | Out-Null
-          New-Item -ItemType Directory -Force -Path $generatedDir | Out-Null
-
-          $rewriter = "$sourceDir\rewrite_execute_fp64_to_fp32_exact_div.py"
-          if (-not (Test-Path -LiteralPath $rewriter)) {
-            throw "Missing V37 exact-division rewriter: $rewriter"
-          }
-
-          $rewriterRawHash = (Get-FileHash -LiteralPath $rewriter -Algorithm SHA256).Hash.ToLowerInvariant()
-          $rewriterText = [System.IO.File]::ReadAllText($rewriter)
-          $rewriterText = $rewriterText.Replace("`r`n", "`n").Replace("`r", "`n")
-          $rewriterBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($rewriterText)
-          $sha256 = [System.Security.Cryptography.SHA256]::Create()
-          try {
-            $rewriterHash = ([System.BitConverter]::ToString($sha256.ComputeHash($rewriterBytes))).Replace("-", "").ToLowerInvariant()
-          }
-          finally {
-            $sha256.Dispose()
-          }
-          Write-Host "V37_REWRITER_RAW_SHA256=$rewriterRawHash"
-          Write-Host "V37_REWRITER_NORMALIZED_SHA256=$rewriterHash"
-          if ($rewriterHash -ne "fc8b1ffef6c94edbe88969cadcabe636b48e3a7baee54fcc06b3d5c4dd589032") {
-            throw "V37 normalized rewriter SHA256 mismatch: $rewriterHash"
-          }
-
-          $inputZip = "$v30SourceDir\v30-ir-inputs.zip"
-          if (-not (Test-Path -LiteralPath $inputZip)) {
-            throw "Missing V30 binary-preserved input archive: $inputZip"
-          }
-          $zipHash = (Get-FileHash -LiteralPath $inputZip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($zipHash -ne "6fc9aa416fd4fbf6e019d0e2b04336831f7a159e63c72911edf35ca657f3d27d") {
-            throw "V30 input archive SHA256 mismatch: $zipHash"
-          }
-          Expand-Archive -LiteralPath $inputZip -DestinationPath $inputDir -Force
-
-          $inputs = @(
-            @{ Path = "$inputDir\execute-trace-only.ll"; Hash = "7c2ec155554ba68edcdd19ca154665a1241a1f63006149748dea1560ce8f6b1e" },
-            @{ Path = "$inputDir\execute-plus-miss-cleaned.ll"; Hash = "a92afe26fbe260aadb7cb0a6b6c759e95b7bcad765e37b38221d599570cc9b91" },
-            @{ Path = "$inputDir\assemble_cleaned.cpp"; Hash = "7ace8e496873b3865aff60f89678d5233ec2bf2c8eb4c00d387f99e193877819" }
-          )
-          foreach ($input in $inputs) {
-            if (-not (Test-Path -LiteralPath $input.Path)) {
-              throw "Missing V37 extracted input: $($input.Path)"
-            }
-            $actual = (Get-FileHash -LiteralPath $input.Path -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne $input.Hash) {
-              throw "V37 extracted input hash mismatch for $($input.Path): $actual"
-            }
-          }
-
-          python $rewriter `
-            --execute "$inputDir\execute-trace-only.ll" `
-            --combined "$inputDir\execute-plus-miss-cleaned.ll" `
-            --output $irDir 1> "$reportDir\rewrite.log" 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content -LiteralPath "$reportDir\rewrite.log"
-            throw "V37 exact FP32 division rewrite failed."
-          }
-
-          $manifest = Get-Content -LiteralPath "$irDir\v30-rewrite-manifest.txt" -Raw
-          foreach ($marker in @(
-            "V37_FP64_TO_EXACT_FP32_DIVISION_REWRITE",
-            "REPLACEMENT=FP32_DIVISION_BY_EXACT_16777215",
-            "FLOAT_DENOMINATOR=0x416FFFFFE0000000",
-            "RECIPROCAL_MULTIPLICATION=DISABLED",
-            "fp64_sequences_replaced=2",
-            "rewritten_feature_flags=65552",
-            "fp32_operation=fdiv",
-            "ssa_numbering_preserved=True",
-            "identity_instructions_inserted=2",
-            "EXACT_DIVISION_REWRITE=PASS",
-            "RESULT=PASS"
-          )) {
-            if (-not $manifest.Contains($marker)) {
-              throw "V37 rewrite manifest is missing: $marker"
-            }
-          }
-
-          Copy-Item -Path "$irDir\*" -Destination $reportDir -Force
-          Copy-Item -LiteralPath $rewriter -Destination "$reportDir\rewrite_execute_fp64_to_fp32_exact_div.py" -Force
-          Copy-Item -LiteralPath "$inputDir\assemble_cleaned.cpp" -Destination $reportDir -Force
 
           $dxcExe = Get-ChildItem -LiteralPath "$PWD\v29-dxc" -Recurse -Filter dxc.exe |
             Where-Object { $_.FullName -match '\\bin\\x64\\dxc\.exe$' } |
             Select-Object -First 1
           if (-not $dxcExe) {
-            throw "V37 could not find the pinned V29 dxc.exe extraction."
+            throw "V41 could not find the pinned DXC extraction."
           }
-          $x64Dir = $dxcExe.DirectoryName
-          $binDir = Split-Path -Path $x64Dir -Parent
-          $root = Split-Path -Path $binDir -Parent
-          $dxvExe = Join-Path -Path $x64Dir -ChildPath "dxv.exe"
+          $dxvExe = Join-Path -Path $dxcExe.DirectoryName -ChildPath "dxv.exe"
           if (-not (Test-Path -LiteralPath $dxvExe)) {
-            throw "V37 dxv.exe is missing: $dxvExe"
+            throw "V41 dxv.exe is missing: $dxvExe"
           }
 
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "V30_DXC_ROOT=$root"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "V30_DXC_EXE=$($dxcExe.FullName)"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "V30_DXV_EXE=$dxvExe"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "V30_DXC_X64_DIR=$x64Dir"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "V30_IR_DIR=$irDir"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "V30_REPORT_DIR=$reportDir"
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "V30_GENERATED_DIR=$generatedDir"
-
-      - name: Rewrite ExecuteTrace to no-output raygen v41
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python "_v26_assets/.github/v41/rewrite_no_output_raygen_v41.py" `
-            --ir-dir "$env:V30_IR_DIR" `
-            --report "$PWD\v41-ir-patch-report.txt"
-
-          Copy-Item -LiteralPath "$PWD\v41-ir-patch-report.txt" `
-            -Destination "$env:V30_REPORT_DIR\v41-ir-patch-report.txt" -Force
-
-          $report = Get-Content "$PWD\v41-ir-patch-report.txt" -Raw
-          foreach ($marker in @(
-            "V41_NO_OUTPUT_RAYGEN_IR_REWRITE",
-            "EXECUTETRACE_BODY=RET_VOID",
-            "TRACE_RAY_CALLS=0",
-            "SCENE_RESOURCE_READS=0",
-            "OUTPUT_UAV_STORES=0",
-            "RESULT=PASS"
-          )) {
-            if (-not $report.Contains($marker)) {
-              throw "Missing V41 IR marker: $marker"
-            }
-          }
-
-      - name: Build Microsoft DXIL assembler v30
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
+          $sourceDir = "$PWD\_v26_assets\.github\v41\hlsl"
           $reportDir = "$PWD\v30-dxil-report"
-          $buildLog = "$reportDir\assembler-build.log"
-          $statusFile = "$reportDir\assembler-build-status.txt"
-          $environmentFile = "$reportDir\visual-studio-environment.txt"
+          $generatedDir = "$PWD\.github\v30\generated"
           New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-
-          $vswhereCandidates = @(
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
-            "$env:ProgramData\Chocolatey\bin\vswhere.exe"
-          )
-          $vswhere = $vswhereCandidates |
-            Where-Object { Test-Path -LiteralPath $_ } |
-            Select-Object -First 1
-          if (-not $vswhere) {
-            throw "V30 could not find vswhere.exe. Checked: $($vswhereCandidates -join ', ')"
-          }
-
-          $installationPath = & $vswhere `
-            -latest `
-            -products * `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
-          if ($LASTEXITCODE -ne 0) {
-            throw "V30 vswhere.exe failed with exit code $LASTEXITCODE."
-          }
-          $installationPath = @($installationPath |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Select-Object -First 1)[0]
-          if ([string]::IsNullOrWhiteSpace($installationPath)) {
-            throw "V30 could not locate a Visual Studio installation containing the x64/x86 C++ tools."
-          }
-          $installationPath = $installationPath.Trim()
-
-          $vcvars = Join-Path -Path $installationPath -ChildPath "VC\Auxiliary\Build\vcvars64.bat"
-          if (-not (Test-Path -LiteralPath $vcvars)) {
-            throw "V30 vcvars64.bat is missing: $vcvars"
-          }
-          if (-not (Test-Path -LiteralPath "$env:V30_DXC_ROOT\inc")) {
-            throw "V30 DXC include directory is missing: $env:V30_DXC_ROOT\inc"
-          }
-          if (-not (Test-Path -LiteralPath "$env:V30_DXC_ROOT\lib\x64\dxcompiler.lib")) {
-            throw "V30 dxcompiler.lib is missing: $env:V30_DXC_ROOT\lib\x64\dxcompiler.lib"
-          }
-          if (-not (Test-Path -LiteralPath "$PWD\v30-inputs\assemble_cleaned.cpp")) {
-            throw "V30 assembler source is missing: $PWD\v30-inputs\assemble_cleaned.cpp"
-          }
-
-          @(
-            "VSWHERE=$vswhere"
-            "VISUAL_STUDIO_INSTALLATION=$installationPath"
-            "VCVARS64=$vcvars"
-            "V30_DXC_ROOT=$env:V30_DXC_ROOT"
-          ) | Set-Content -LiteralPath $environmentFile
-
-          $buildScript = "$PWD\v30-build-assembler.cmd"
-          @(
-            "@echo off"
-            "setlocal"
-            "call `"$vcvars`""
-            "if errorlevel 1 exit /b %errorlevel%"
-            "cl /nologo /std:c++17 /EHsc /W4 /DUNICODE /D_UNICODE /I`"$env:V30_DXC_ROOT\inc`" `"v30-inputs\assemble_cleaned.cpp`" /Fe:v30-assemble.exe /link /LIBPATH:`"$env:V30_DXC_ROOT\lib\x64`" dxcompiler.lib ole32.lib 1> `"v30-dxil-report\assembler-build.log`" 2>&1"
-            "exit /b %errorlevel%"
-          ) | Set-Content -LiteralPath $buildScript -Encoding ascii
-
-          & $env:ComSpec /d /c $buildScript
-          $buildExit = $LASTEXITCODE
-          if ($buildExit -ne 0 -or -not (Test-Path -LiteralPath "$PWD\v30-assemble.exe")) {
-            if (Test-Path -LiteralPath $buildLog) {
-              Get-Content -LiteralPath $buildLog
-            }
-            throw "V30 DXIL assembler build failed with exit code $buildExit."
-          }
-
-          $assembler = Get-Item -LiteralPath "$PWD\v30-assemble.exe"
-          $assemblerHash = (Get-FileHash -LiteralPath $assembler.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          @(
-            "V30_ASSEMBLER_BUILD_PASS"
-            "VISUAL_STUDIO_INSTALLATION=$installationPath"
-            "ASSEMBLER_SIZE=$($assembler.Length)"
-            "ASSEMBLER_SHA256=$assemblerHash"
-          ) | Set-Content -LiteralPath $statusFile
-
-          Write-Host "V30_ASSEMBLER_BUILD_PASS"
-          Write-Host "VISUAL_STUDIO_INSTALLATION=$installationPath"
-          Write-Host "ASSEMBLER_SIZE=$($assembler.Length)"
-          Write-Host "ASSEMBLER_SHA256=$assemblerHash"
-
-      - name: Assemble and Microsoft-validate no-output raygen modules v41
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Copy-Item -LiteralPath "$env:V30_DXC_X64_DIR\dxcompiler.dll" -Destination "$PWD\dxcompiler.dll" -Force
-          if (Test-Path -LiteralPath "$env:V30_DXC_X64_DIR\dxil.dll") {
-            Copy-Item -LiteralPath "$env:V30_DXC_X64_DIR\dxil.dll" -Destination "$PWD\dxil.dll" -Force
-          }
+          New-Item -ItemType Directory -Force -Path $generatedDir | Out-Null
 
           $modules = @(
-            @{ Name = "execute-trace-fp32"; IR = "$env:V30_IR_DIR\execute-trace-fp32.ll"; RequireMiss = $false },
-            @{ Name = "execute-plus-miss-fp32"; IR = "$env:V30_IR_DIR\execute-plus-miss-fp32.ll"; RequireMiss = $true }
+            @{
+              Name = "execute-trace-fp32"
+              Source = "$sourceDir\no-output-execute.hlsl"
+              RequireMiss = $false
+            },
+            @{
+              Name = "execute-plus-miss-fp32"
+              Source = "$sourceDir\no-output-combined.hlsl"
+              RequireMiss = $true
+            }
           )
 
           $manifest = @(
-            "V41_REAL_DXIL_NO_OUTPUT_RAYGEN_BUILD"
+            "V41_MINIMAL_HLSL_NO_OUTPUT_BUILD"
             "DXC_VERSION=v1.9.2607"
-            "EXECUTETRACE_BODY=RET_VOID"
+            "SOURCE=FRESH_MINIMAL_HLSL"
+            "EXECUTETRACE_BODY=EMPTY"
             "TRACE_RAY_CALLS=0"
             "SCENE_RESOURCE_READS=0"
             "OUTPUT_UAV_STORES=0"
             "DISPATCH_INDEX_READS=0"
-            "REWRITTEN_FEATURE_FLAGS=65552"
+            "UNUSED_ORIGINAL_DECLARATIONS=0"
           )
 
           foreach ($module in $modules) {
             $name = $module.Name
-            $irText = Get-Content -LiteralPath $module.IR -Raw
-            $signature = 'define void @"\01?ExecuteTrace@@YAXXZ"() #0 {'
-            $expectedBody = "$signature`n  ret void`n}"
-            if (-not $irText.Contains($expectedBody)) {
-              throw "V41 IR $name does not contain the exact ret-void ExecuteTrace body."
+            $source = $module.Source
+            if (-not (Test-Path -LiteralPath $source)) {
+              throw "Missing V41 HLSL source: $source"
             }
 
-            $output = "$env:V30_REPORT_DIR\$name.dxil"
-            $assembly = "$env:V30_REPORT_DIR\$name-assemble.txt"
-            $dump = "$env:V30_REPORT_DIR\$name-dump.txt"
-            $dumpErrors = "$env:V30_REPORT_DIR\$name-dump-errors.txt"
-            $validator = "$env:V30_REPORT_DIR\$name-dxv.txt"
+            $output = "$reportDir\$name.dxil"
+            $dump = "$reportDir\$name-dump.txt"
+            $dumpErrors = "$reportDir\$name-dump-errors.txt"
+            $validator = "$reportDir\$name-dxv.txt"
 
-            & "$PWD\v30-assemble.exe" $module.IR $output 1> $assembly 2>&1
+            & $dxcExe.FullName -T lib_6_5 -HV 2021 -O3 -Fo $output $source
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
-              Get-Content -LiteralPath $assembly
-              throw "V41 DXIL assembly failed for $name."
+              throw "DXC compilation failed for V41 module $name."
             }
 
-            & $env:V30_DXC_EXE -dumpbin $output 1> $dump 2> $dumpErrors
+            & $dxcExe.FullName -dumpbin $output 1> $dump 2> $dumpErrors
             $dumpExit = $LASTEXITCODE
             if ($dumpExit -ne 0) {
               throw "V41 dxc -dumpbin failed for $name with exit $dumpExit."
             }
 
-            & $env:V30_DXV_EXE $output 1> $validator 2>&1
+            & $dxvExe $output 1> $validator 2>&1
             $dxvExit = $LASTEXITCODE
             if ($dxvExit -ne 0) {
               Get-Content -LiteralPath $validator
-              throw "Microsoft dxv.exe rejected V41 module $name with exit $dxvExit."
+              throw "Microsoft dxv.exe rejected V41 minimal module $name with exit $dxvExit."
             }
 
             $dumpText = Get-Content -LiteralPath $dump -Raw
             if (-not $dumpText.Contains("ExecuteTrace")) {
-              throw "V41 module $name is missing ExecuteTrace."
+              throw "V41 minimal module $name is missing ExecuteTrace."
             }
-            if ($dumpText -match '(?m)^\s*call\s+void\s+@dx\.op\.traceRay') {
-              throw "V41 module $name still calls TraceRay."
-            }
-            if ($dumpText -match '(?m)^\s*call\s+void\s+@dx\.op\.rawBufferStore') {
-              throw "V41 module $name still writes a UAV."
-            }
-            if ($dumpText -match '(?m)^\s*%\d+\s*=\s*call\s+i32\s+@dx\.op\.dispatchRaysIndex') {
-              throw "V41 module $name still reads DispatchRaysIndex."
-            }
-            if (-not $dumpText.Contains("i64 65552")) {
-              throw "V41 module $name does not expose feature mask 65552."
+            foreach ($forbidden in @(
+              "dx.op.traceRay",
+              "dx.op.rawBufferStore",
+              "dx.op.dispatchRaysIndex",
+              "RaytracingAccelerationStructure",
+              "RWStructuredBuffer",
+              "StructuredBuffer",
+              "Texture2D"
+            )) {
+              if ($dumpText.Contains($forbidden)) {
+                throw "V41 minimal module $name contains forbidden marker: $forbidden"
+              }
             }
 
-            $hasMiss = $dumpText.Contains("?Miss@@")
+            $hasMiss = $dumpText.Contains("?Miss@@") -or $dumpText.Contains(" Miss")
             if ($module.RequireMiss -and -not $hasMiss) {
               throw "V41 combined module lost Miss."
             }
@@ -514,16 +298,27 @@ jobs:
             }
 
             $item = Get-Item -LiteralPath $output
+            if ($item.Length -lt 1024) {
+              throw "V41 minimal module $name is unexpectedly small: $($item.Length) bytes."
+            }
             $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
-            Copy-Item -LiteralPath $output -Destination "$env:V30_GENERATED_DIR\$name.dxil" -Force
+            Copy-Item -LiteralPath $output -Destination "$generatedDir\$name.dxil" -Force
+            Copy-Item -LiteralPath $source -Destination "$reportDir\$name.hlsl" -Force
             $manifest += "MODULE=$name SIZE=$($item.Length) SHA256=$hash DUMP_EXIT=$dumpExit DXV_EXIT=$dxvExit MISS=$hasMiss"
             Write-Host "V41_MODULE=$name SIZE=$($item.Length) SHA256=$hash DXV_EXIT=$dxvExit MISS=$hasMiss"
           }
 
           $manifest += "RESULT=PASS"
-          $manifest | Set-Content -LiteralPath "$env:V30_REPORT_DIR\v30-dxil-manifest.txt"
+          $manifest | Set-Content -LiteralPath "$reportDir\v30-dxil-manifest.txt"
           "V41_NO_OUTPUT_RAYGEN_DXIL_MICROSOFT_VALIDATION_PASS" |
-            Set-Content -LiteralPath "$env:V30_REPORT_DIR\v30-dxil-validation-marker.txt"
+            Set-Content -LiteralPath "$reportDir\v30-dxil-validation-marker.txt"
+          @(
+            "V41_MINIMAL_HLSL_BUILD_REPORT"
+            "ORIGINAL_LIBRARY_DECLARATIONS_REUSED=NO"
+            "FRESH_RESOURCE_FREE_LIBRARY=YES"
+            "MICROSOFT_DXV_VALIDATION=PASS"
+            "RESULT=PASS"
+          ) | Set-Content v41-hlsl-build-report.txt
 
       - name: Patch native D3D12 runtime bridge
         shell: pwsh
@@ -4450,41 +4245,6 @@ jobs:
           }
           Get-Content v36-patch-report.txt
 
-      - name: Patch exact FP32 division runtime marker v37
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python "_v26_assets/.github/v37/patch_exact_fp32_division_marker_v37.py"
-
-      - name: Verify v37 exact-division source
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $source = Get-Content "source\d3d12\d3d12.cpp" -Raw
-          foreach ($marker in @(
-            "D3DMetal RTX exact FP32 division bridge v37:",
-            "operation=fdiv",
-            "reciprocal_multiply=0",
-            "feature_mask=65552"
-          )) {
-            if (-not $source.Contains($marker)) {
-              throw "Missing V37 source marker: $marker"
-            }
-          }
-          $report = Get-Content "v37-patch-report.txt" -Raw
-          foreach ($marker in @(
-            "V37_EXACT_FP32_DIVISION_BRIDGE_PATCH_OK",
-            "REPLACEMENT_OPERATION=FDIV_FLOAT",
-            "DIVISOR_LLVM_HEX=0x416FFFFFE0000000",
-            "RECIPROCAL_MULTIPLICATION=DISABLED",
-            "RESULT=PASS"
-          )) {
-            if (-not $report.Contains($marker)) {
-              throw "Missing V37 patch-report marker: $marker"
-            }
-          }
-          Get-Content v37-patch-report.txt
-
       - name: Patch no-output raygen runtime marker v41
         shell: pwsh
         run: |
@@ -4501,7 +4261,7 @@ jobs:
             "trace_ray=0",
             "scene_reads=0",
             "output_stores=0",
-            "execute_body=ret_void"
+            "execute_body=empty"
           )) {
             if (-not $source.Contains($marker)) {
               throw "Missing V41 source marker: $marker"
@@ -4511,7 +4271,8 @@ jobs:
           $report = Get-Content "v41-patch-report.txt" -Raw
           foreach ($marker in @(
             "V41_NO_OUTPUT_RAYGEN_CONTROL_PATCH_OK",
-            "EXECUTETRACE_BODY=RET_VOID",
+            "EXECUTETRACE_BODY=EMPTY",
+            "FRESH_MINIMAL_HLSL_DXIL=YES",
             "TRACE_RAY_EXECUTION=DISABLED",
             "OUTPUT_UAV_STORES=DISABLED",
             "RESULT=PASS"
@@ -5159,38 +4920,6 @@ jobs:
           "V36_BINARY_MARKERS_PASS" |
             Set-Content v36-binary-verification.txt
 
-      - name: Verify v37 binary and exact DXIL markers
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $bytes = [System.IO.File]::ReadAllBytes("$PWD\ReShade64.dll")
-          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
-          foreach ($marker in @(
-            "D3DMetal RTX exact FP32 division bridge v37:",
-            "operation=fdiv",
-            "reciprocal_multiply=0",
-            "feature_mask=65552"
-          )) {
-            if (-not $ascii.Contains($marker)) {
-              throw "Missing V37 binary marker: $marker"
-            }
-          }
-
-          $manifest = Get-Content "v30-dxil-report\v30-dxil-manifest.txt" -Raw
-          foreach ($marker in @(
-            "V37_REAL_DXIL_EXACT_FP32_DIVISION_BUILD",
-            "FP32_OPERATION=FDIV",
-            "FP32_DIVISOR=0x416FFFFFE0000000",
-            "RECIPROCAL_MULTIPLICATION=DISABLED",
-            "RESULT=PASS"
-          )) {
-            if (-not $manifest.Contains($marker)) {
-              throw "Missing V37 DXIL-manifest marker: $marker"
-            }
-          }
-          "V37_BINARY_AND_EXACT_DXIL_MARKERS_PASS" |
-            Set-Content v37-binary-verification.txt
-
       - name: Verify v41 binary and no-output DXIL markers
         shell: pwsh
         run: |
@@ -5202,7 +4931,7 @@ jobs:
             "trace_ray=0",
             "scene_reads=0",
             "output_stores=0",
-            "execute_body=ret_void"
+            "execute_body=empty"
           )) {
             if (-not $ascii.Contains($marker)) {
               throw "Missing V41 binary marker: $marker"
@@ -5211,14 +4940,28 @@ jobs:
 
           $manifest = Get-Content "v30-dxil-report\v30-dxil-manifest.txt" -Raw
           foreach ($marker in @(
-            "V41_REAL_DXIL_NO_OUTPUT_RAYGEN_BUILD",
-            "EXECUTETRACE_BODY=RET_VOID",
+            "V41_MINIMAL_HLSL_NO_OUTPUT_BUILD",
+            "EXECUTETRACE_BODY=EMPTY",
             "TRACE_RAY_CALLS=0",
             "OUTPUT_UAV_STORES=0",
+            "UNUSED_ORIGINAL_DECLARATIONS=0",
             "RESULT=PASS"
           )) {
             if (-not $manifest.Contains($marker)) {
               throw "Missing V41 DXIL marker: $marker"
+            }
+          }
+
+          $hlslReport = Get-Content "v41-hlsl-build-report.txt" -Raw
+          foreach ($marker in @(
+            "V41_MINIMAL_HLSL_BUILD_REPORT",
+            "ORIGINAL_LIBRARY_DECLARATIONS_REUSED=NO",
+            "FRESH_RESOURCE_FREE_LIBRARY=YES",
+            "MICROSOFT_DXV_VALIDATION=PASS",
+            "RESULT=PASS"
+          )) {
+            if (-not $hlslReport.Contains($marker)) {
+              throw "Missing V41 HLSL-build marker: $marker"
             }
           }
 
@@ -5377,17 +5120,11 @@ jobs:
             Add-Content build-info.txt
           "Safety: V36 forwards all GetShaderIdentifier calls unchanged and does not alter the state object, shader tables, or dispatch arguments" |
             Add-Content build-info.txt
-          "Rewrite: V37 replaces the two original FP64 n/16777215 normalizations with FP32 fdiv by the exactly representable divisor 16777215.0f" |
+          "Control: V41 uses a freshly compiled, resource-free minimal HLSL library instead of pruning the original library" |
             Add-Content build-info.txt
-          "Correction: V37 disables the V30 reciprocal-multiplication approximation, which can differ from the original rounded float by one ULP" |
+          "Control: V41 ExecuteTrace is empty and performs no TraceRay call, scene-resource read, DispatchRaysIndex read, or output-UAV store" |
             Add-Content build-info.txt
-          "Validation: Microsoft DXIL assembly, dxc dump, dxv validation, preserved TraceRay, no FP64 operations, and feature mask 65552 are required" |
-            Add-Content build-info.txt
-          "Control: V41 replaces only ExecuteTrace with a validated ret-void ray-generation shader" |
-            Add-Content build-info.txt
-          "Control: V41 performs no TraceRay call, no scene-resource reads, no DispatchRaysIndex read, and no output-UAV stores" |
-            Add-Content build-info.txt
-          "Control: V41 preserves the accepted state-object shape, shader tables, identifiers, indirect dispatch, and Miss export" |
+          "Control: V41 preserves the accepted state-object descriptor shape, shader tables, indirect dispatch, and an empty Miss export with the original 24-byte payload layout" |
             Add-Content build-info.txt
           "Interpretation: Unchanged white/yellow means the RT shader output is not causing the image; a changed or cleared image means the ray-hit buffer or its consumer is implicated" |
             Add-Content build-info.txt
@@ -5429,9 +5166,7 @@ jobs:
             v34-binary-verification.txt
             v36-patch-report.txt
             v36-binary-verification.txt
-            v37-patch-report.txt
-            v37-binary-verification.txt
-            v41-ir-patch-report.txt
+            v41-hlsl-build-report.txt
             v41-patch-report.txt
             v41-binary-verification.txt
             v30-dxil-report/**
