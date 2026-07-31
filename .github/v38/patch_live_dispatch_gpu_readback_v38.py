@@ -657,8 +657,33 @@ helper = r'''
 \t}
 
 '''
+# This helper is intentionally a raw Python string so C++ escapes such as
+# '\0' remain intact. Convert only indentation markers to real tab bytes.
+helper = helper.replace(r"\t", "	")
+
+for forbidden in (
+    r"\tusing v38_",
+    r"\tconstexpr size_t v38_",
+    r"\tstatic v38_",
+    r"\tvoid v38_",
+    r"\tHRESULT STDMETHODCALLTYPE v38_",
+):
+    if forbidden in helper:
+        raise RuntimeError(
+            f"V38 helper still contains a literal indentation escape: {forbidden}")
 
 text = text.replace(v34_anchor, helper + "\n" + v34_anchor, 1)
+
+for forbidden in (
+    r"\tusing v38_",
+    r"\tconstexpr size_t v38_",
+    r"\tstatic v38_",
+    r"\tvoid v38_",
+    r"\tHRESULT STDMETHODCALLTYPE v38_",
+):
+    if forbidden in text:
+        raise RuntimeError(
+            f"V38 patched C++ contains a literal indentation escape: {forbidden}")
 
 install_anchor = '''\tvoid v34_install_create_command_signature_hook(
 \t\tID3D12Device *device)
