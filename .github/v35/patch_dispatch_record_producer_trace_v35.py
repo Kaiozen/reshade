@@ -68,7 +68,44 @@ identifier_new = '''\t\t\tif (SUCCEEDED(properties_hr) && properties != nullptr)
 \t\t\t\tproperties->Release();
 \t\t\t}
 '''
-text = replace_once(text, identifier_old, identifier_new, "V35 identifier logging")
+# Target only the V32 universal bridge. V31 intentionally contains the same
+# five-line identifier-presence block, so a whole-file replace is ambiguous.
+v32_function_start_marker = "\tbool try_v32_fp32_universal_bridge(\n"
+v32_start = text.find(v32_function_start_marker)
+if v32_start < 0:
+    raise RuntimeError("V35 could not find try_v32_fp32_universal_bridge")
+
+v32_open_brace = text.find("{", v32_start)
+if v32_open_brace < 0:
+    raise RuntimeError("V35 could not find the V32 bridge opening brace")
+
+depth = 0
+v32_end = -1
+for position in range(v32_open_brace, len(text)):
+    character = text[position]
+    if character == "{":
+        depth += 1
+    elif character == "}":
+        depth -= 1
+        if depth == 0:
+            v32_end = position + 1
+            break
+if v32_end < 0:
+    raise RuntimeError("V35 could not find the V32 bridge closing brace")
+
+v32_function = text[v32_start:v32_end]
+v32_count = v32_function.count(identifier_old)
+if v32_count != 1:
+    raise RuntimeError(
+        f"V35 V32 identifier block: expected 1 occurrence, found {v32_count}")
+v32_function = v32_function.replace(identifier_old, identifier_new, 1)
+text = text[:v32_start] + v32_function + text[v32_end:]
+
+if text.count("D3DMetal RTX dispatch-record producer trace v35: STATE_IDENTIFIERS") != 1:
+    raise RuntimeError("V35 identifier logging was not inserted exactly once")
+if text.count(identifier_old) != 1:
+    raise RuntimeError(
+        "V35 expected the duplicate V31 identifier block to remain exactly once")
 
 helper_anchor = "\tvoid v33_install_command_list_method_hooks(IUnknown *command_list)\n"
 if text.count(helper_anchor) != 1:
