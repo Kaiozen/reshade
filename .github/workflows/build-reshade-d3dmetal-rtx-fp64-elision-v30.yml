@@ -204,11 +204,26 @@ jobs:
 
           $rewriter = "$sourceDir\rewrite_execute_fp64_to_fp32.py"
           if (-not (Test-Path -LiteralPath $rewriter)) {
-            throw "Missing V30 Fixed 2 rewriter: $rewriter"
+            throw "Missing V30 Fixed 3 rewriter: $rewriter"
           }
-          $rewriterHash = (Get-FileHash -LiteralPath $rewriter -Algorithm SHA256).Hash.ToLowerInvariant()
+          # Git on Windows may check text files out with CRLF even when the committed
+          # source uses LF. Hash normalized UTF-8 text so line-ending conversion does
+          # not falsely reject the exact same rewriter.
+          $rewriterRawHash = (Get-FileHash -LiteralPath $rewriter -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rewriterText = [System.IO.File]::ReadAllText($rewriter)
+          $rewriterText = $rewriterText.Replace("`r`n", "`n").Replace("`r", "`n")
+          $rewriterBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($rewriterText)
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $rewriterHash = ([System.BitConverter]::ToString($sha256.ComputeHash($rewriterBytes))).Replace("-", "").ToLowerInvariant()
+          }
+          finally {
+            $sha256.Dispose()
+          }
+          Write-Host "V30_REWRITER_RAW_SHA256=$rewriterRawHash"
+          Write-Host "V30_REWRITER_NORMALIZED_SHA256=$rewriterHash"
           if ($rewriterHash -ne "189a97b5c057a1dbf726ae7625627048040371933a7722eb1a86413e2e5fb2d7") {
-            throw "V30 Fixed 2 rewriter SHA256 mismatch or stale script: $rewriterHash"
+            throw "V30 Fixed 3 normalized rewriter SHA256 mismatch or stale script: $rewriterHash"
           }
 
           $inputZip = "$sourceDir\v30-ir-inputs.zip"
@@ -256,13 +271,13 @@ jobs:
             throw "V30 feature-mask rewrite marker is missing."
           }
           if (-not $manifest.Contains("SSA_NUMBERING_AUDIT=PASS")) {
-            throw "V30 Fixed 2 SSA-numbering audit marker is missing."
+            throw "V30 Fixed 3 SSA-numbering audit marker is missing."
           }
           if (-not $manifest.Contains("ssa_numbering_preserved=True")) {
-            throw "V30 Fixed 2 did not preserve ExecuteTrace numeric SSA numbering."
+            throw "V30 Fixed 3 did not preserve ExecuteTrace numeric SSA numbering."
           }
           if (-not $manifest.Contains("identity_instructions_inserted=2")) {
-            throw "V30 Fixed 2 did not preserve all three SSA definitions in both FP64 replacement sequences."
+            throw "V30 Fixed 3 did not preserve all three SSA definitions in both FP64 replacement sequences."
           }
 
           Copy-Item -Path "$irDir\*" -Destination $reportDir -Force
