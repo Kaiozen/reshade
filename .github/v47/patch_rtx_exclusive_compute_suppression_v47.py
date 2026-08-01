@@ -22,9 +22,10 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
         raise RuntimeError(f"{label}: expected 1 occurrence, found {count}")
     return source.replace(old, new, 1)
 
-# V34 and V46 command hooks occur before the V47 helper definition, so provide
-# a forward declaration before V34's helper block.
-forward_anchor = "\tusing v34_create_command_signature_fn = HRESULT (STDMETHODCALLTYPE *)(\n"
+# V46 SetPipelineState/Dispatch hooks and the later V34 ExecuteIndirect hook
+# all occur before the V47 helper definitions. Insert declarations immediately
+# before the first V46 hook, so every call site sees them.
+forward_anchor = "\tvoid STDMETHODCALLTYPE v46_trace_set_pipeline_state(\n"
 forward_insert = (
     "\tbool v47_lookup_target_compute(\n"
     "\t\tID3D12GraphicsCommandList *command_list,\n"
@@ -303,7 +304,7 @@ for declaration, call in (
     ("bool v47_suppress_direct_target_compute(\n\t\tID3D12GraphicsCommandList *command_list,",
      "if (v47_suppress_direct_target_compute("),
     ("bool v47_suppress_indirect_target_compute(\n\t\tID3D12GraphicsCommandList *command_list,",
-     "v47_suppress_indirect_target_compute("),
+     "\t\t\tv47_suppress_indirect_target_compute("),
 ):
     declaration_pos = text.find(declaration)
     call_pos = text.find(call)
@@ -319,6 +320,7 @@ report.write_text("\n".join([
     "V46_POST_ONLY_COMPUTE_HASH_SET_COUNT=14",
     "V46_STEADY_PER_FRAME_COMPUTE_HASH_COUNT=10",
     "V46_ONE_SHOT_COMPUTE_HASH_COUNT=4",
+    "FORWARD_DECLARATIONS_BEFORE_FIRST_V46_HOOK=YES",
     "TARGET_DIRECT_DISPATCH_SUPPRESSION=ENABLED",
     "TARGET_INDIRECT_DISPATCH_SUPPRESSION=ENABLED",
     "TARGET_COMPUTE_BINDING_PRESERVED=YES",
