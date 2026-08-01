@@ -55,6 +55,7 @@ jobs:
             .github/v56
             .github/v57
             .github/v58
+            .github/v59
           sparse-checkout-cone-mode: false
           fetch-depth: 1
 
@@ -4873,12 +4874,10 @@ jobs:
 
       - name: Patch steady-state shader-table lineage v59
         shell: pwsh
-        run: python .github/v59/patch_d3d12_v59.py
-
+        run: python "_v26_assets/.github/v59/patch_d3d12_v59.py"
       - name: Verify v59 steady-state lineage source
         shell: pwsh
-        run: python .github/v59/verify_d3d12_v59.py
-
+        run: python "_v26_assets/.github/v59/verify_d3d12_v59.py"
       - name: Verify bridge source
         shell: pwsh
         run: |
