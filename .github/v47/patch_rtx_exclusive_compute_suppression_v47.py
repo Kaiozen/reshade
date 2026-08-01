@@ -30,7 +30,17 @@ forward_insert = (
     "\t\tID3D12GraphicsCommandList *command_list,\n"
     "\t\tuint64_t &pso_id,\n"
     "\t\tuint64_t &shader_hash);\n"
-    "\tvoid v47_log_active();\n\n"
+    "\tvoid v47_log_active();\n"
+    "\tvoid v47_record_target_bind(\n"
+    "\t\tID3D12GraphicsCommandList *command_list);\n"
+    "\tbool v47_suppress_direct_target_compute(\n"
+    "\t\tID3D12GraphicsCommandList *command_list,\n"
+    "\t\tUINT x, UINT y, UINT z);\n"
+    "\tbool v47_suppress_indirect_target_compute(\n"
+    "\t\tID3D12GraphicsCommandList *command_list,\n"
+    "\t\tUINT max_command_count,\n"
+    "\t\tID3D12Resource *argument_buffer,\n"
+    "\t\tUINT64 argument_buffer_offset);\n\n"
 )
 text = replace_once(
     text,
@@ -284,6 +294,22 @@ if text.count("s_v46_original_dispatch(command_list, x, y, z);") != 1:
 if text.count("s_v34_original_execute_indirect(") != 1:
     raise RuntimeError(
         "V47 expected one ordinary non-target ExecuteIndirect forwarding call")
+
+# All three V47 functions are called by hook bodies that precede the helper
+# definitions in this translation unit. Verify declarations exist before use.
+for declaration, call in (
+    ("void v47_record_target_bind(\n\t\tID3D12GraphicsCommandList *command_list);",
+     "v47_record_target_bind(command_list);"),
+    ("bool v47_suppress_direct_target_compute(\n\t\tID3D12GraphicsCommandList *command_list,",
+     "if (v47_suppress_direct_target_compute("),
+    ("bool v47_suppress_indirect_target_compute(\n\t\tID3D12GraphicsCommandList *command_list,",
+     "v47_suppress_indirect_target_compute("),
+):
+    declaration_pos = text.find(declaration)
+    call_pos = text.find(call)
+    if declaration_pos < 0 or call_pos < 0 or declaration_pos >= call_pos:
+        raise RuntimeError(
+            f"V47 declaration-order validation failed: {declaration.splitlines()[0]}")
 
 SOURCE.write_text(text, encoding="utf-8", newline="\n")
 
