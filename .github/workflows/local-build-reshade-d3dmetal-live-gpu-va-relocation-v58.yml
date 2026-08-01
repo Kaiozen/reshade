@@ -7,7 +7,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: [self-hosted, Windows, local-fast]
+    runs-on: [self-hosted, Windows, local-fast, vs2022-dxc]
     steps:
       - name: Checkout ReShade and submodules
         uses: actions/checkout@v4
@@ -63,7 +63,10 @@ jobs:
 
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
-
+
+        
+with:
+          vs-version: '[17.0,18.0)'
       - name: Show build environment
         shell: pwsh
         run: |
