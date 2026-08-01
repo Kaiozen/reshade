@@ -19,9 +19,10 @@ if text.count(globals_anchor) != 1:
     raise RuntimeError(f"V43 globals anchor mismatch: {text.count(globals_anchor)}")
 
 helper = r"""
-	// V33 defines this helper later in the same namespace. V43 is injected
-	// before that definition, so declare it before the census helpers use it.
+	// V33 and V36 define these helpers later in the same namespace. V43 is
+	// injected before those definitions, so declare them before use.
 	void *v33_identity_pointer(IUnknown *object);
+	void v36_identifier_to_hex(const void *identifier, char (&hex)[65]);
 
 	struct v43_pipeline_info
 	{
