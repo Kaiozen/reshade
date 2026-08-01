@@ -5372,14 +5372,13 @@ jobs:
             Set-Content v46-binary-verification.txt
 
 
-      - name: Verify v50 target-UAV exact-base binary markers
+      - name: Verify retained v50 exact-base lineage markers
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $bytes = [System.IO.File]::ReadAllBytes("$PWD\ReShade64.dll")
           $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
           foreach ($marker in @(
-            "D3DMetal RTX target-UAV exact-base probe v50: ACTIVE",
             "TARGET_RESOURCE event=",
             "TARGET_DESCRIPTOR event=",
             "TARGET_DESCRIPTOR_COPY event=",
@@ -5387,14 +5386,13 @@ jobs:
             "descriptor_offset=0",
             "TARGET_RTV_BIND event=",
             "TARGET_BARRIER event=",
-            "signature=texture2d-1024x1024-mips11-r32-typeless-flags0x5",
-            "commands-modified=0"
+            "signature=texture2d-1024x1024-mips11-r32-typeless-flags0x5"
           )) {
             if (-not $ascii.Contains($marker)) {
-              throw "Missing V50 binary marker: $marker"
+              throw "Missing retained V50 lineage marker: $marker"
             }
           }
-          "V50_BINARY_MARKERS_PASS" |
+          "V50_RETAINED_LINEAGE_MARKERS_PASS" |
             Set-Content v50-binary-verification.txt
 
       - name: Verify v51 zero-before-read binary markers
