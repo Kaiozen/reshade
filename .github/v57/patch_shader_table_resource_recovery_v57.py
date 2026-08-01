@@ -43,6 +43,7 @@ type_insert = r'''	using v57_copy_buffer_region_fn = void (STDMETHODCALLTYPE *)(
 	constexpr size_t v57_resource_map_slot = 8;
 	constexpr UINT64 v57_max_recovery_buffer_bytes = 16ull * 1024ull * 1024ull;
 
+	void v57_install_resource_map_hook(ID3D12Resource *resource);
 	void v39_track_resource(void *created);
 
 '''
@@ -346,6 +347,41 @@ for marker in required:
     if marker not in text:
         raise RuntimeError(f"Missing V57 source marker: {marker}")
 
+
+map_hook_declaration = (
+    "\tvoid v57_install_resource_map_hook("
+    "ID3D12Resource *resource);\n"
+)
+map_hook_call = "\t\tv57_install_resource_map_hook(resource);\n"
+map_hook_definition = (
+    "\tvoid v57_install_resource_map_hook("
+    "ID3D12Resource *resource)\n"
+)
+
+if text.count(map_hook_declaration) != 1:
+    raise RuntimeError(
+        "V57 resource-map hook forward declaration count is not exactly one")
+if text.count(map_hook_call) != 1:
+    raise RuntimeError(
+        "V57 resource-map hook call count is not exactly one")
+if text.count(map_hook_definition) != 1:
+    raise RuntimeError(
+        "V57 resource-map hook definition count is not exactly one")
+
+declaration_position = text.find(map_hook_declaration)
+call_position = text.find(map_hook_call)
+definition_position = text.find(map_hook_definition)
+if not (
+    declaration_position >= 0 and
+    call_position > declaration_position and
+    definition_position > declaration_position
+):
+    raise RuntimeError(
+        "V57 resource-map hook declaration ordering is invalid: "
+        f"declaration={declaration_position} "
+        f"call={call_position} "
+        f"definition={definition_position}")
+
 SOURCE.write_text(text, encoding="utf-8", newline="\n")
 
 report = Path("v57-patch-report.txt")
@@ -354,6 +390,7 @@ report.write_text("\n".join([
     "BASELINE=V56_STEADY_STATE_LOCAL_ROOT_RESOLUTION",
     "COPY_BUFFER_REGION_SLOT=15",
     "RESOURCE_MAP_SLOT=8",
+    "RESOURCE_MAP_HOOK_FORWARD_DECLARATION=YES",
     "COPY_DESTINATION_RESOURCE_TRACKING=ENABLED",
     "COPY_SOURCE_RESOURCE_TRACKING=ENABLED",
     "MAPPED_RESOURCE_TRACKING=ENABLED",
