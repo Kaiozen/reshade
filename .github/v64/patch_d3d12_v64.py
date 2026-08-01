@@ -527,7 +527,7 @@ v64_impl = r'''    }
     }
 
 
-\tusing v34_create_command_signature_fn = HRESULT (STDMETHODCALLTYPE *)(
+    using v34_create_command_signature_fn = HRESULT (STDMETHODCALLTYPE *)(
 '''
 text = replace_once(text, insert_anchor, v64_impl, "insert V64 temporal capture implementation")
 
