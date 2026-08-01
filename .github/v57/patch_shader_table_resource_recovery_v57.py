@@ -352,7 +352,7 @@ map_hook_declaration = (
     "\tvoid v57_install_resource_map_hook("
     "ID3D12Resource *resource);\n"
 )
-map_hook_call = "\t\tv57_install_resource_map_hook(resource);\n"
+map_hook_call = "        v57_install_resource_map_hook(resource);\n"
 map_hook_definition = (
     "\tvoid v57_install_resource_map_hook("
     "ID3D12Resource *resource)\n"
@@ -373,8 +373,8 @@ call_position = text.find(map_hook_call)
 definition_position = text.find(map_hook_definition)
 if not (
     declaration_position >= 0 and
-    call_position > declaration_position and
-    definition_position > declaration_position
+    definition_position > declaration_position and
+    call_position > definition_position
 ):
     raise RuntimeError(
         "V57 resource-map hook declaration ordering is invalid: "
@@ -391,6 +391,7 @@ report.write_text("\n".join([
     "COPY_BUFFER_REGION_SLOT=15",
     "RESOURCE_MAP_SLOT=8",
     "RESOURCE_MAP_HOOK_FORWARD_DECLARATION=YES",
+    "RESOURCE_MAP_HOOK_CALL_INDENTATION=EIGHT_SPACES",
     "COPY_DESTINATION_RESOURCE_TRACKING=ENABLED",
     "COPY_SOURCE_RESOURCE_TRACKING=ENABLED",
     "MAPPED_RESOURCE_TRACKING=ENABLED",
