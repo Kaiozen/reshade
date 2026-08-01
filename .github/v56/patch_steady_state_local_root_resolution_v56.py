@@ -22,6 +22,22 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
         raise RuntimeError(f"{label}: expected 1 occurrence, found {count}")
     return source.replace(old, new, 1)
 
+forward_anchor = "    using v39_create_committed_resource_fn = HRESULT (STDMETHODCALLTYPE *)(\n"
+if text.count(forward_anchor) != 1:
+    raise RuntimeError(
+        f"V56 forward-declaration anchor mismatch: {text.count(forward_anchor)}")
+
+forward_declaration = (
+    "    bool v56_steady_state_pipeline_candidate(\n"
+    "        ID3D12GraphicsCommandList *command_list,\n"
+    "        uint64_t &pipeline_id,\n"
+    "        uint64_t &pipeline_ray_index);\n\n"
+)
+text = text.replace(
+    forward_anchor,
+    forward_declaration + forward_anchor,
+    1)
+
 helper_anchor = "\tvoid v38_try_capture_dispatch_record(\n"
 if text.count(helper_anchor) != 1:
     raise RuntimeError(f"V56 helper anchor mismatch: {text.count(helper_anchor)}")
@@ -192,9 +208,26 @@ for marker in required_markers:
     if marker not in text:
         raise RuntimeError(f"Missing V56 source marker: {marker}")
 
-if text.count("v56_steady_state_pipeline_candidate(") != 3:
+if text.count("v56_steady_state_pipeline_candidate(") != 4:
     raise RuntimeError(
-        "V56 candidate helper definition/call count is not exactly three")
+        "V56 candidate declaration/definition/call count is not exactly four")
+
+declaration_position = text.find(
+    "bool v56_steady_state_pipeline_candidate(\n")
+first_call_position = text.find(
+    "!v56_steady_state_pipeline_candidate(")
+definition_position = text.find(
+    "\tbool v56_steady_state_pipeline_candidate(\n")
+if not (
+    declaration_position >= 0 and
+    first_call_position > declaration_position and
+    definition_position > first_call_position
+):
+    raise RuntimeError(
+        "V56 candidate declaration ordering is invalid: "
+        f"declaration={declaration_position} "
+        f"first_call={first_call_position} "
+        f"definition={definition_position}")
 
 SOURCE.write_text(text, encoding="utf-8", newline="\n")
 
@@ -209,6 +242,7 @@ report.write_text(
         "PATTERN_MISS_MATCH_REQUIRED=YES",
         "MINIMUM_PER_PIPELINE_INDIRECT_RAYS=512",
         "GLOBAL_INDIRECT_RAY_INDEX_FORWARDING=ENABLED",
+        "CANDIDATE_FORWARD_DECLARATION_BEFORE_V39=YES",
         "V38_ARGUMENT_READBACK=STEADY_STATE_PIPELINE",
         "V39_SHADER_TABLE_READBACK=STEADY_STATE_PIPELINE",
         "V55_DESCRIPTOR_RESOLUTION=STEADY_STATE_PIPELINE",
