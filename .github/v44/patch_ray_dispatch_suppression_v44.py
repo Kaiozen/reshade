@@ -16,7 +16,7 @@ globals_anchor = '\tstatic std::atomic<uint64_t> s_v43_total_indirect_rays = 0;\
 if text.count(globals_anchor) != 1:
     raise RuntimeError(f'V44 globals anchor mismatch: {text.count(globals_anchor)}')
 
-globals_insert = r'''
+globals_insert = '''
 \tstatic std::atomic<uint64_t> s_v44_suppressed_direct_rays = 0;
 \tstatic std::atomic<uint64_t> s_v44_suppressed_indirect_rays = 0;
 \tstatic std::once_flag s_v44_active_log_once;
@@ -31,7 +31,7 @@ direct_anchor = (
 if text.count(direct_anchor) != 1:
     raise RuntimeError(f'V44 direct DispatchRays anchor mismatch: {text.count(direct_anchor)}')
 
-direct_replacement = r'''\t\tstd::call_once(
+direct_replacement = '''\t\tstd::call_once(
 \t\t\ts_v44_active_log_once,
 \t\t\t[]()
 \t\t\t{
@@ -68,7 +68,7 @@ indirect_anchor = (
 if text.count(indirect_anchor) != 1:
     raise RuntimeError(f'V44 ExecuteIndirect anchor mismatch: {text.count(indirect_anchor)}')
 
-indirect_replacement = r'''\t\tif (dispatch_rays)
+indirect_replacement = '''\t\tif (dispatch_rays)
 \t\t{
 \t\t\tstd::call_once(
 \t\t\t\ts_v44_active_log_once,
@@ -122,6 +122,11 @@ for marker in [
 if text.count('s_v34_original_execute_indirect(') != 1:
     raise RuntimeError('V44 expected one remaining original ExecuteIndirect call for non-ray commands')
 
+# Guard against the exact generator bug that broke the first V44 build.
+for forbidden in ('\\tstatic std::atomic', '\\t\\tstd::call_once', '\\t\\tif (dispatch_rays)'):
+    if forbidden in text:
+        raise RuntimeError(f'V44 emitted a literal tab escape into C++ source: {forbidden}')
+
 SOURCE.write_text(text, encoding='utf-8', newline='\n')
 
 report = Path('v44-patch-report.txt')
@@ -132,6 +137,7 @@ report.write_text('\n'.join([
     'DIRECT_DISPATCH_RAYS_SUPPRESSED=YES',
     'INDIRECT_DISPATCH_RAYS_SUPPRESSED=YES',
     'NON_RAY_EXECUTE_INDIRECT_PRESERVED=YES',
+    'LITERAL_TAB_ESCAPES_IN_CPP=NO',
     'SHADER_BYTES_MODIFIED_BY_V44=NO',
     'STATE_OBJECTS_MODIFIED_BY_V44=NO',
     'SHADER_TABLES_MODIFIED_BY_V44=NO',
