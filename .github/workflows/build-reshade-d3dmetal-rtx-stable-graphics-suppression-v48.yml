@@ -53,6 +53,7 @@ jobs:
             .github/v45
             .github/v46
             .github/v47
+            .github/v48
           sparse-checkout-cone-mode: false
           fetch-depth: 1
 
