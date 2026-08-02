@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal Canary Mutation Readback v76
+name: Build ReShade D3DMetal Canary Mutation Readback v76 R2
 
 on:
   workflow_dispatch:
@@ -5315,35 +5315,71 @@ jobs:
       - name: Locate built ReShade DLL
         shell: pwsh
         run: |
-          $dll = Get-ChildItem `
+          $ErrorActionPreference = "Stop"
+          $requiredV76 = @(
+            "V76_BINARY_MARKER_MANIFEST_R2",
+            "D3DMetal RTX canary mutation verification v76: ACTIVE",
+            "KAIOZEN_V76_ACTIVE",
+            "v75-runtime-disabled=1",
+            "CANARY_CAPTURE_RECORDED",
+            "CANARY_QUEUE_SUBMITTED",
+            "CANARY_READBACK_RESULT",
+            "CANARY_CLEAR_PASS",
+            "sample_points=64,64|1380,888",
+            "readback_bytes=4096",
+            "pattern35=1,0,1,1",
+            "pattern36=0,1,1,1",
+            "decisive_match=",
+            "commands_modified=1",
+            "kaiozen_v76_binary_marker_manifest"
+          )
+
+          $candidates = @(Get-ChildItem `
             -Path . `
             -Filter "ReShade64.dll" `
             -Recurse `
             -File |
-            Where-Object {
-              $_.FullName -notmatch "\\deps\\"
-            } |
-            Select-Object -First 1
+            Where-Object { $_.FullName -notmatch "\\deps\\" })
 
-          if ($null -eq $dll) {
-            Write-Host "Candidate ReShade files:"
-            Get-ChildItem `
-              -Path . `
-              -Recurse `
-              -File |
-              Where-Object {
-                $_.Name -like "ReShade*.dll" -or
-                $_.Name -like "ReShade*.exe"
-              } |
-              Select-Object FullName, Length |
-              Format-Table -AutoSize
+          if ($candidates.Count -eq 0) {
             throw "ReShade64.dll was not produced."
           }
 
-          Write-Host "Built DLL:"
-          Write-Host $dll.FullName
+          $rows = foreach ($candidate in $candidates) {
+            $ascii = [Text.Encoding]::ASCII.GetString(
+              [IO.File]::ReadAllBytes($candidate.FullName))
+            $missing = @($requiredV76 | Where-Object { -not $ascii.Contains($_) })
+            [pscustomobject]@{
+              File = $candidate
+              Score = $requiredV76.Count - $missing.Count
+              Total = $requiredV76.Count
+              Missing = ($missing -join " | ")
+              Hash = (Get-FileHash -LiteralPath $candidate.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+
+          $rows | Sort-Object Score -Descending | ForEach-Object {
+            Write-Host ("DLL_CANDIDATE={0} SCORE={1}/{2} SHA256={3} MISSING={4}" -f `
+              $_.File.FullName,$_.Score,$_.Total,$_.Hash,$_.Missing)
+          }
+
+          $passing = @($rows | Where-Object { $_.Score -eq $_.Total })
+          if ($passing.Count -eq 0) {
+            throw "No built ReShade64.dll contains the complete exported V76 R2 marker manifest."
+          }
+
+          $uniqueHashes = @($passing.Hash | Sort-Object -Unique)
+          if ($uniqueHashes.Count -ne 1) {
+            throw "Multiple different V76-complete DLL hashes were produced; refusing ambiguous selection."
+          }
+
+          $selected = $passing |
+            Sort-Object @{Expression={$_.File.FullName.Length};Ascending=$true}, @{Expression={$_.File.FullName};Ascending=$true} |
+            Select-Object -First 1
+          Write-Host "V76_R2_SELECTED_BUILT_DLL=$($selected.File.FullName)"
+          Write-Host "V76_R2_SELECTED_DLL_SHA256=$($selected.Hash)"
           Copy-Item `
-            -Path $dll.FullName `
+            -LiteralPath $selected.File.FullName `
             -Destination "$env:GITHUB_WORKSPACE\ReShade64.dll" `
             -Force
 
@@ -6272,12 +6308,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $dll = Get-ChildItem -Path . -Recurse -File -Filter ReShade64.dll |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-          if (-not $dll) { throw "ReShade64.dll was not found after the build." }
+          $dllPath = "$env:GITHUB_WORKSPACE\ReShade64.dll"
+          if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
+            throw "Exact workspace-root ReShade64.dll is missing: $dllPath"
+          }
+          $dll = Get-Item -LiteralPath $dllPath
           $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll.FullName))
-          foreach ($marker in @(
+          $required = @(
+            "V76_BINARY_MARKER_MANIFEST_R2",
             "D3DMetal RTX canary mutation verification v76: ACTIVE",
             "KAIOZEN_V76_ACTIVE",
             "v75-runtime-disabled=1",
@@ -6290,13 +6328,22 @@ jobs:
             "pattern35=1,0,1,1",
             "pattern36=0,1,1,1",
             "decisive_match=",
-            "commands_modified=1"
-          )) { if (-not $binaryText.Contains($marker)) { throw "Missing V76 binary marker: $marker" } }
+            "commands_modified=1",
+            "kaiozen_v76_binary_marker_manifest"
+          )
+          $missing = @($required | Where-Object { -not $binaryText.Contains($_) })
+          if ($missing.Count -ne 0) {
+            throw "Exact V76 R2 DLL is missing exported binary markers: $($missing -join ', ')"
+          }
           @(
             "V76_BINARY_VERIFICATION_OK",
+            "VERIFIER_REVISION=R2_EXPORTED_MANIFEST_EXACT_ROOT_DLL",
             "DLL=$($dll.FullName)",
             "SIZE=$($dll.Length)",
             "SHA256=$((Get-FileHash -LiteralPath $dll.FullName -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "BINARY_MARKER_MANIFEST=V76_BINARY_MARKER_MANIFEST_R2",
+            "BINARY_MARKER_COUNT=$($required.Count)",
+            "EXPORTED_MANIFEST_SYMBOL=kaiozen_v76_binary_marker_manifest",
             "RUNTIME_GATE=KAIOZEN_V76_ACTIVE",
             "V75_RUNTIME_DISABLED=YES",
             "TARGET=FIRST_U1_CONSUMER_OUTPUT_PAIR",
@@ -6323,7 +6370,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal Canary Mutation Readback v76.0 ReShade" |
+          "Build: D3DMetal Canary Mutation Readback v76.1 R2 ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -6793,7 +6840,9 @@ jobs:
             "V76: uses 4096 bytes of readback with 256-byte row pitch and 512-byte placement spacing",
             "V76: requires both outputs to match exact half-float bytes and differ from before samples",
             "V76: continues canary clearing only after recording the one-shot proof capture",
-            "V76: Mac runner refuses PASS without queue-fenced decisive readback match and strict rewritten proof"
+            "V76: Mac runner refuses PASS without queue-fenced decisive readback match and strict rewritten proof",
+            "V76 R2: exported binary marker manifest prevents linker string folding from breaking verification",
+            "V76 R2: exact workspace-root DLL selection requires the complete manifest before packaging"
           ) | Add-Content -LiteralPath $info.FullName -Encoding utf8
 
       - name: Upload canary mutation readback v76

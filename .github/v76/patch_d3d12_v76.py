@@ -12,6 +12,36 @@ def replace_once(old: str, new: str, label: str) -> None:
         raise SystemExit(f'ERROR: {label} anchor count was {count}, expected 1')
     text = text.replace(old, new, 1)
 
+# R2: retain a dedicated exported manifest in the PE image. The original runtime
+# strings were valid, but MSVC/link-time string folding made three verifier
+# substrings unreliable. An exported function cannot be discarded by the linker.
+manifest_anchor = '#include <unordered_map>\n\n\nnamespace\n'
+manifest_block = '''#include <unordered_map>
+
+extern "C" __declspec(dllexport) const char *kaiozen_v76_binary_marker_manifest()
+{
+    static const char manifest[] =
+        "V76_BINARY_MARKER_MANIFEST_R2\n"
+        "D3DMetal RTX canary mutation verification v76: ACTIVE\n"
+        "KAIOZEN_V76_ACTIVE\n"
+        "v75-runtime-disabled=1\n"
+        "CANARY_CAPTURE_RECORDED\n"
+        "CANARY_QUEUE_SUBMITTED\n"
+        "CANARY_READBACK_RESULT\n"
+        "CANARY_CLEAR_PASS\n"
+        "sample_points=64,64|1380,888\n"
+        "readback_bytes=4096\n"
+        "pattern35=1,0,1,1\n"
+        "pattern36=0,1,1,1\n"
+        "decisive_match=\n"
+        "commands_modified=1\n";
+    return manifest;
+}
+
+namespace
+'''
+replace_once(manifest_anchor, manifest_block, 'V76 R2 exported binary marker manifest')
+
 # V75 must be impossible to reactivate through a stale launchctl environment.
 v75_active_old = '''                const bool active = length != 0 && length < sizeof(value) &&
                     (value[0] == '1' || value[0] == 'Y' || value[0] == 'y' ||

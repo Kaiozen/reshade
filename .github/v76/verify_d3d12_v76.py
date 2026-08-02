@@ -32,12 +32,16 @@ checks = {
     'queue_call': 'v76_on_execute_command_lists(queue, count, command_lists);',
     'identity_guard': 'stage=command-list-identity',
     'capture_retry': 's_v76_capture_claimed.store(false, std::memory_order_release);',
+    'r2_exported_manifest': 'extern "C" __declspec(dllexport) const char *kaiozen_v76_binary_marker_manifest()',
+    'r2_manifest_tag': 'V76_BINARY_MARKER_MANIFEST_R2',
 }
 missing = [name for name, marker in checks.items() if marker not in text]
 if missing:
     raise SystemExit('ERROR: Missing V76 source checks: ' + ', '.join(missing))
-if text.count('D3DMetal RTX canary mutation verification v76: ACTIVE') != 1:
-    raise SystemExit('ERROR: V76 ACTIVE marker count is not exactly one')
+if text.count('D3DMetal RTX canary mutation verification v76: ACTIVE') != 2:
+    raise SystemExit('ERROR: V76 ACTIVE marker count is not exactly two after R2 manifest export')
+if text.count('kaiozen_v76_binary_marker_manifest') != 1:
+    raise SystemExit('ERROR: V76 R2 exported manifest function count is not exactly one')
 if text.count('v76_apply_canary_after_dispatch(') < 3:
     raise SystemExit('ERROR: V76 apply function prototype/definition/call incomplete')
 if text.count('v76_on_execute_command_lists(') < 4:
@@ -70,6 +74,7 @@ Path('v76-source-verification.txt').write_text(
         'QUEUE_FENCE_WORKER=YES',
         'COMMAND_LIST_IDENTITY_REQUIRED=YES',
         'CAPTURE_RETRY_ON_SETUP_FAILURE=YES',
+        'EXPORTED_BINARY_MARKER_MANIFEST_R2=YES',
         'COMMANDS_MODIFIED=YES',
         'RESULT=PASS',
     ]) + '\n',
