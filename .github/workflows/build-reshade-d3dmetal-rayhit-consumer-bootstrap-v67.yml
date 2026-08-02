@@ -4973,7 +4973,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-          python "_v26_assets/.github/v67/verify_d3d12_v67.py" *> v67-source-verification.txt
+          python "_v26_assets/.github/v67/verify_d3d12_v67.py"
           $verifyExit = $LASTEXITCODE
           Get-Content -LiteralPath v67-source-verification.txt
           if ($verifyExit -ne 0) { throw "V67 source verification failed with exit code $verifyExit." }
