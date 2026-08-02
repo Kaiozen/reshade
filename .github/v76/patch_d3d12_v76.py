@@ -12,11 +12,11 @@ def replace_once(old: str, new: str, label: str) -> None:
         raise SystemExit(f'ERROR: {label} anchor count was {count}, expected 1')
     text = text.replace(old, new, 1)
 
-# R2: retain a dedicated exported manifest in the PE image. The original runtime
-# strings were valid, but MSVC/link-time string folding made three verifier
-# substrings unreliable. An exported function cannot be discarded by the linker.
+# R3: retain a dedicated exported manifest in the PE image. The Python block is
+# deliberately raw so every C++ "\n" remains two source characters instead of
+# becoming an illegal physical newline inside a quoted C++ string literal.
 manifest_anchor = '#include <unordered_map>\n\n\nnamespace\n'
-manifest_block = '''#include <unordered_map>
+manifest_block = r'''#include <unordered_map>
 
 extern "C" __declspec(dllexport) const char *kaiozen_v76_binary_marker_manifest()
 {

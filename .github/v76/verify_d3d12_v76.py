@@ -42,6 +42,22 @@ if text.count('D3DMetal RTX canary mutation verification v76: ACTIVE') != 2:
     raise SystemExit('ERROR: V76 ACTIVE marker count is not exactly two after R2 manifest export')
 if text.count('kaiozen_v76_binary_marker_manifest') != 1:
     raise SystemExit('ERROR: V76 R2 exported manifest function count is not exactly one')
+escaped_manifest_literals = [
+    '"V76_BINARY_MARKER_MANIFEST_R2\\n"',
+    '"D3DMetal RTX canary mutation verification v76: ACTIVE\\n"',
+    '"KAIOZEN_V76_ACTIVE\\n"',
+    '"CANARY_CAPTURE_RECORDED\\n"',
+    '"CANARY_QUEUE_SUBMITTED\\n"',
+    '"CANARY_READBACK_RESULT\\n"',
+    '"CANARY_CLEAR_PASS\\n"',
+    '"commands_modified=1\\n"',
+]
+missing_escaped = [literal for literal in escaped_manifest_literals if literal not in text]
+if missing_escaped:
+    raise SystemExit('ERROR: V76 R3 escaped C++ manifest literals are missing: ' + ', '.join(missing_escaped))
+malformed_literal = '"V76_BINARY_MARKER_MANIFEST_R2\n"'
+if malformed_literal in text:
+    raise SystemExit('ERROR: V76 manifest contains a physical newline inside a C++ string literal')
 if text.count('v76_apply_canary_after_dispatch(') < 3:
     raise SystemExit('ERROR: V76 apply function prototype/definition/call incomplete')
 if text.count('v76_on_execute_command_lists(') < 4:
@@ -75,6 +91,7 @@ Path('v76-source-verification.txt').write_text(
         'COMMAND_LIST_IDENTITY_REQUIRED=YES',
         'CAPTURE_RETRY_ON_SETUP_FAILURE=YES',
         'EXPORTED_BINARY_MARKER_MANIFEST_R2=YES',
+        'R3_CPP_STRING_ESCAPE_GUARD=PASS',
         'COMMANDS_MODIFIED=YES',
         'RESULT=PASS',
     ]) + '\n',
