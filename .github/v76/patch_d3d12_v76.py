@@ -21,7 +21,7 @@ manifest_block = r'''#include <unordered_map>
 extern "C" __declspec(dllexport) const char *kaiozen_v76_binary_marker_manifest()
 {
     static const char manifest[] =
-        "V76_BINARY_MARKER_MANIFEST_R2\n"
+        "V76_BINARY_MARKER_MANIFEST_R4_QUEUE_HOOK\n"
         "D3DMetal RTX canary mutation verification v76: ACTIVE\n"
         "KAIOZEN_V76_ACTIVE\n"
         "v75-runtime-disabled=1\n"
@@ -34,6 +34,9 @@ extern "C" __declspec(dllexport) const char *kaiozen_v76_binary_marker_manifest(
         "pattern35=1,0,1,1\n"
         "pattern36=0,1,1,1\n"
         "decisive_match=\n"
+        "V76_QUEUE_HOOK_BOOTSTRAP_R4\n"
+        "CREATE_COMMAND_QUEUE_HOOK\n"
+        "EXECUTE_COMMAND_LISTS_HOOK\n"
         "commands_modified=1\n";
     return manifest;
 }
@@ -718,6 +721,29 @@ impl = r'''    bool v76_is_active()
 '''
 replace_once(impl_anchor, impl + impl_anchor, 'V76 implementation')
 
+
+# R4: V76 R3 recorded the capture but never observed queue submission because
+# the existing CreateCommandQueue/ExecuteCommandLists hook bootstrap was never
+# called on the original D3D12 device. Install it before returning the native
+# device so every later game queue receives the proven ExecuteCommandLists hook.
+queue_bootstrap_old = '''	install_v25_root_signature_trace(static_cast<ID3D12Device *>(*ppDevice));
+	install_d3dmetal_state_object_trace(static_cast<ID3D12Device *>(*ppDevice));
+	v61_install_add_to_state_object_hook(static_cast<ID3D12Device *>(*ppDevice));
+	v33_install_device_command_list_hooks(static_cast<ID3D12Device *>(*ppDevice));
+	return hr;
+'''
+queue_bootstrap_new = '''	install_v25_root_signature_trace(static_cast<ID3D12Device *>(*ppDevice));
+	install_d3dmetal_state_object_trace(static_cast<ID3D12Device *>(*ppDevice));
+	v61_install_add_to_state_object_hook(static_cast<ID3D12Device *>(*ppDevice));
+	v33_install_device_command_list_hooks(static_cast<ID3D12Device *>(*ppDevice));
+	v38_install_create_command_queue_hook(static_cast<ID3D12Device *>(*ppDevice));
+	reshade::log::message(
+		reshade::log::level::info,
+		"D3DMetal RTX canary mutation verification v76: QUEUE_HOOK_BOOTSTRAP_R4 requested=1 timing=before-native-device-return create-command-queue-hook=enabled execute-command-lists-hook=installed-on-created-queues.");
+	return hr;
+'''
+replace_once(queue_bootstrap_old, queue_bootstrap_new, 'V76 R4 native queue hook bootstrap')
+
 source.write_text(text, encoding='utf-8')
 Path('v76-patch-report.txt').write_text(
     '\n'.join([
@@ -736,6 +762,9 @@ Path('v76-patch-report.txt').write_text(
         'ROW_PITCH=256',
         'PLACEMENT_STRIDE=512',
         'QUEUE_FENCE=ENABLED',
+    'QUEUE_HOOK_BOOTSTRAP_R4=ENABLED_BEFORE_NATIVE_DEVICE_RETURN',
+    'CREATE_COMMAND_QUEUE_HOOK_INSTALL=REQUIRED',
+    'EXECUTE_COMMAND_LISTS_HOOK_INSTALL=REQUIRED',
         'PERSISTENT_CANARY_CLEAR=ENABLED',
         'VISUAL_TIMER_REQUIRES_DECISIVE_READBACK_MATCH=YES',
         'COMMANDS_MODIFIED=YES',

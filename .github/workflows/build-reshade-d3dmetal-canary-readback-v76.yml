@@ -5317,7 +5317,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $requiredV76 = @(
-            "V76_BINARY_MARKER_MANIFEST_R2",
+            "V76_BINARY_MARKER_MANIFEST_R4_QUEUE_HOOK",
+            "V76_QUEUE_HOOK_BOOTSTRAP_R4",
+            "QUEUE_HOOK_BOOTSTRAP_R4 requested=1",
+            "CREATE_COMMAND_QUEUE_HOOK",
+            "EXECUTE_COMMAND_LISTS_HOOK",
             "D3DMetal RTX canary mutation verification v76: ACTIVE",
             "KAIOZEN_V76_ACTIVE",
             "v75-runtime-disabled=1",
@@ -6315,7 +6319,11 @@ jobs:
           $dll = Get-Item -LiteralPath $dllPath
           $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll.FullName))
           $required = @(
-            "V76_BINARY_MARKER_MANIFEST_R2",
+            "V76_BINARY_MARKER_MANIFEST_R4_QUEUE_HOOK",
+            "V76_QUEUE_HOOK_BOOTSTRAP_R4",
+            "QUEUE_HOOK_BOOTSTRAP_R4 requested=1",
+            "CREATE_COMMAND_QUEUE_HOOK",
+            "EXECUTE_COMMAND_LISTS_HOOK",
             "D3DMetal RTX canary mutation verification v76: ACTIVE",
             "KAIOZEN_V76_ACTIVE",
             "v75-runtime-disabled=1",
@@ -6333,15 +6341,18 @@ jobs:
           )
           $missing = @($required | Where-Object { -not $binaryText.Contains($_) })
           if ($missing.Count -ne 0) {
-            throw "Exact V76 R2 DLL is missing exported binary markers: $($missing -join ', ')"
+            throw "Exact V76 R4 DLL is missing exported binary markers: $($missing -join ', ')"
           }
           @(
             "V76_BINARY_VERIFICATION_OK",
-            "VERIFIER_REVISION=R2_EXPORTED_MANIFEST_EXACT_ROOT_DLL",
+            "VERIFIER_REVISION=R4_QUEUE_HOOK_BOOTSTRAP_EXACT_ROOT_DLL",
             "DLL=$($dll.FullName)",
             "SIZE=$($dll.Length)",
             "SHA256=$((Get-FileHash -LiteralPath $dll.FullName -Algorithm SHA256).Hash.ToLowerInvariant())",
-            "BINARY_MARKER_MANIFEST=V76_BINARY_MARKER_MANIFEST_R2",
+            "BINARY_MARKER_MANIFEST=V76_BINARY_MARKER_MANIFEST_R4_QUEUE_HOOK",
+            "QUEUE_HOOK_BOOTSTRAP_R4=YES",
+            "CREATE_COMMAND_QUEUE_HOOK=REQUIRED",
+            "EXECUTE_COMMAND_LISTS_HOOK=REQUIRED",
             "BINARY_MARKER_COUNT=$($required.Count)",
             "EXPORTED_MANIFEST_SYMBOL=kaiozen_v76_binary_marker_manifest",
             "RUNTIME_GATE=KAIOZEN_V76_ACTIVE",
@@ -6370,7 +6381,7 @@ jobs:
           $hash = Get-FileHash $dll -Algorithm SHA256
           $file = Get-Item $dll
 
-          "Build: D3DMetal Canary Mutation Readback v76.1 R2 ReShade" |
+          "Build: D3DMetal Canary Mutation Readback v76.2 R4 ReShade" |
             Set-Content build-info.txt
           "Repository: $env:GITHUB_REPOSITORY" |
             Add-Content build-info.txt
@@ -6842,7 +6853,9 @@ jobs:
             "V76: continues canary clearing only after recording the one-shot proof capture",
             "V76: Mac runner refuses PASS without queue-fenced decisive readback match and strict rewritten proof",
             "V76 R2: exported binary marker manifest prevents linker string folding from breaking verification",
-            "V76 R2: exact workspace-root DLL selection requires the complete manifest before packaging"
+            "V76 R2: exact workspace-root DLL selection requires the complete manifest before packaging",
+            "V76 R4: bootstraps CreateCommandQueue interception before returning the original D3D12 device",
+            "V76 R4: requires the ExecuteCommandLists hook before queue-fenced canary readback"
           ) | Add-Content -LiteralPath $info.FullName -Encoding utf8
 
       - name: Upload canary mutation readback v76
