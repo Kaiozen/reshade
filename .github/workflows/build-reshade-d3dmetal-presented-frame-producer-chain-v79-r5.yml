@@ -5223,7 +5223,21 @@ jobs:
 
       - name: Patch V79 R5 ExecuteBundle graph and reset generations
         shell: pwsh
-        run: python "_v26_assets/.github/v79r5/patch_d3d12_v79_r5.py"
+        run: |
+          $ErrorActionPreference = "Continue"
+          Write-Host "HOTFIX2_ANCHOR_MODE=MARKER_DRIVEN_REGEX"
+          $output = & python "_v26_assets/.github/v79r5/patch_d3d12_v79_r5.py" 2>&1
+          $patchExit = $LASTEXITCODE
+          $output | Tee-Object -FilePath v79-r5-patcher-console.txt
+          if (Test-Path -LiteralPath v79-r5-patcher-diagnostics.txt) {
+            Write-Host "===== V79 R5 PATCHER DIAGNOSTICS ====="
+            Get-Content -LiteralPath v79-r5-patcher-diagnostics.txt
+          }
+          if ($patchExit -ne 0) {
+            $detail = @($output | Where-Object { "$_" -match "V79_R5_PATCHER_ERROR" } | Select-Object -First 1)
+            if ($detail.Count -eq 0) { $detail = @("No structured V79 R5 patcher error was emitted.") }
+            throw "V79 R5 HOTFIX2 patcher failed with exit code $patchExit. $($detail[0])"
+          }
 
       - name: Verify V79 R5 ExecuteBundle graph source
         shell: pwsh
@@ -6786,6 +6800,7 @@ jobs:
           $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll.FullName))
           $required = @(
             "V79_R5_BINARY_MARKER_MANIFEST_R5_EXECUTE_BUNDLE_GRAPH",
+            "V79_R5_HOTFIX2_MARKER_DRIVEN_PATCHER",
             "D3DMetal RTX presented-frame producer chain v79 R5: ACTIVE",
             "COMMAND_LIST_HOOKS installed=1",
             "EXECUTE_BUNDLE_EDGE",
@@ -6807,6 +6822,7 @@ jobs:
             "SIZE=$($dll.Length)",
             "SHA256=$((Get-FileHash -LiteralPath $dll.FullName -Algorithm SHA256).Hash.ToLowerInvariant())",
             "BINARY_MARKER_MANIFEST=V79_R5_BINARY_MARKER_MANIFEST_R5_EXECUTE_BUNDLE_GRAPH",
+            "BINARY_HOTFIX_MARKER=V79_R5_HOTFIX2_MARKER_DRIVEN_PATCHER",
             "EXPORTED_MANIFEST_SYMBOL=kaiozen_v79_r5_binary_marker_manifest",
             "TRIPLET_SOURCE=V79_R3_FROZEN_RECORDING_TIME_TRIPLET",
             "STATIC_WRITER_RECOVERY=V79_R4",
@@ -7406,6 +7422,7 @@ jobs:
             Select-Object -First 1
           if (-not $info) { throw "build-info.txt was not found." }
           @(
+            "V79 R5 HOTFIX2: marker-driven whitespace-tolerant source patcher with structured diagnostics",
             "V79 R5: keeps the R3 triplet and R4 static writer metadata as identity seeds",
             "V79 R5: hooks ID3D12GraphicsCommandList Reset slot 10 and ExecuteBundle slot 27 while forwarding both unchanged",
             "V79 R5: records ordered RTV and bundle-edge operations per command-list identity and reset generation",
@@ -7421,6 +7438,8 @@ jobs:
           name: reshade-d3dmetal-presented-frame-producer-chain-v79-r5-${{ github.sha }}
           path: |
             v79-r5-patch-report.txt
+            v79-r5-patcher-diagnostics.txt
+            v79-r5-patcher-console.txt
             v79-r5-source-verification.txt
             v79-r5-binary-verification.txt
             v79-r4-patch-report.txt
