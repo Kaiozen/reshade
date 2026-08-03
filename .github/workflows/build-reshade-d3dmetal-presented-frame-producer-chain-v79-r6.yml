@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal Presented Frame Producer Chain v79 R6
+name: LOCAL V79 R6 37676 build-reshade-d3dmetal-presented-frame-producer-chain-v79-r6
 
 on:
   workflow_dispatch:
@@ -8,8 +8,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
-
+    runs-on: [self-hosted, Windows, local-fast, vs2022-dxc]
     steps:
       - name: Checkout ReShade and submodules
         uses: actions/checkout@v4
@@ -5464,7 +5463,7 @@ jobs:
             /t:Build `
             /p:Configuration=Release `
             /p:Platform="64-bit" `
-            /m:1 `
+            /m:24 `
             /verbosity:minimal
 
       - name: Locate built ReShade DLL
