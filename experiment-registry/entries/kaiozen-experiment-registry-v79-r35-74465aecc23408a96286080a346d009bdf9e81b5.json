@@ -1,0 +1,37 @@
+{
+    "schema":  "kaiozen-reshade-experiment-registry/v1",
+    "repository":  "Kaiozen/reshade",
+    "branch":  "main",
+    "version":  "V79-R35",
+    "parent":  "V79-R34",
+    "source_commit":  "74465aecc23408a96286080a346d009bdf9e81b5",
+    "build_timestamp":  "20260805-155415",
+    "status":  "BUILT_NOT_RUN",
+    "purpose":  "Identify the exact R34-captured compute shader, map offset-12/13 lineage, and independently prove and test each candidate with delayed queue-fenced grid readback.",
+    "safety":  {
+                   "target_signature":  "exact-cs-fnv1a64-9575b9c16468bf21-plus-groups-345-222-1",
+                   "pipeline_library_hooks":  "disabled-safe-r28",
+                   "gpu_readback":  true,
+                   "injected_copies":  "verify-a-or-b-before-and-after-16-point-grid",
+                   "injected_barriers":  "uav-copy-source-uav around verified history mutation",
+                   "suppressed_draws":  "none-r34-skip-target-negative-control-not-repeated",
+                   "commands_modified":  "only-when-explicit-mode-file-active",
+                   "pso_modified":  false
+               },
+    "artifact":  {
+                     "filename":  "reshade-d3dmetal-presented-frame-producer-chain-v79-r35-74465aecc23408a96286080a346d009bdf9e81b5.zip",
+                     "sha256":  "4c8433922fe47a724b877dd236a74461b608487f301c5547c556e8ee1b0449ef"
+                 },
+    "expected_runtime":  "zzz-v79-r35-exact-shader-split-history-runtime-bundle.zip",
+    "result_markers":  [
+                           "V79_R35_EXACT_SHADER_SPLIT_HISTORY_CONTROL=PASS",
+                           "FINAL_RESTORE_RESULT=PASS",
+                           "V79_R35_REPORT_PACKAGING=PASS"
+                       ],
+    "no_rerun":  false,
+    "notes":  [
+                  "R34 captured the exact compute shader but its four-point zero proof was invalid because every before sample was zero.",
+                  "R35 requires the captured shader identity and tracks whether offsets 12 and 13 rotate or swap across recordings.",
+                  "R35 tests A and B independently with 16-point grids; continuous clearing is permitted only after per-resource mutation proof."
+              ]
+}
