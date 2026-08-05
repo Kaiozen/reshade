@@ -1,0 +1,37 @@
+{
+    "schema":  "kaiozen-reshade-experiment-registry/v1",
+    "repository":  "Kaiozen/reshade",
+    "branch":  "main",
+    "version":  "V79-R33",
+    "parent":  "V79-R32",
+    "source_commit":  "74465aecc23408a96286080a346d009bdf9e81b5",
+    "build_timestamp":  "20260805-124441",
+    "status":  "BUILT_NOT_RUN",
+    "purpose":  "Manually control the exact V78 depth-2 compute candidate pair with one-shot clear, continuous clear, and A/B branch isolation after RTX world entry.",
+    "safety":  {
+                   "target_signature":  "groups-173-444-1-root0-offsets-4-5-7-format10-2760x1776",
+                   "pipeline_library_hooks":  "disabled-safe-r28",
+                   "gpu_readback":  false,
+                   "injected_copies":  0,
+                   "injected_barriers":  "two-uav-barriers-per-cleared-resource",
+                   "suppressed_draws":  0,
+                   "commands_modified":  "only-when-explicit-mode-file-active",
+                   "pso_modified":  false
+               },
+    "artifact":  {
+                     "filename":  "reshade-d3dmetal-presented-frame-producer-chain-v79-r33-74465aecc23408a96286080a346d009bdf9e81b5.zip",
+                     "sha256":  "49470aebdbe4318708de4e4d4683424848cf3feb34f15fc1a1e545d40f3d8640"
+                 },
+    "expected_runtime":  "zzz-v79-r33-denoiser-history-control-runtime-bundle.zip",
+    "result_markers":  [
+                           "V79_R33_MANUALLY_ARMED_DENOISER_HISTORY_CONTROL=PASS",
+                           "FINAL_RESTORE_RESULT=PASS",
+                           "V79_R33_REPORT_PACKAGING=PASS"
+                       ],
+    "no_rerun":  false,
+    "notes":  [
+                  "R32 reduced temporal trails but did not stop the Big Bang, proving the final blit is too late.",
+                  "R33 follows the already discovered V78 depth-2 compute candidate pair at root0 offsets 4 and 5.",
+                  "R33 starts inert, uses no colored marker, and exposes PROBE, CLEAR_ONCE, CLEAR_CONTINUOUS, A_ONLY, B_ONLY, and OFF."
+              ]
+}
