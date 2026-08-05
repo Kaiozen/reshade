@@ -1,0 +1,37 @@
+{
+    "schema":  "kaiozen-reshade-experiment-registry/v1",
+    "repository":  "Kaiozen/reshade",
+    "branch":  "main",
+    "version":  "V79-R37",
+    "parent":  "V79-R36",
+    "source_commit":  "74465aecc23408a96286080a346d009bdf9e81b5",
+    "build_timestamp":  "20260805-171828",
+    "status":  "BUILT_NOT_RUN",
+    "purpose":  "Isolate the first post-seed depth1 outputs with complete GPU texture readback and split post-dispatch clearing.",
+    "safety":  {
+                   "target_signature":  "exact-cs-fnv1a64-9575b9c16468bf21-plus-groups-345-222-1",
+                   "pipeline_library_hooks":  "disabled-safe-r28",
+                   "gpu_readback":  true,
+                   "injected_copies":  "verify-a-or-b-before-and-after-16-point-grid",
+                   "injected_barriers":  "uav-copy-source-uav around verified history mutation",
+                   "suppressed_draws":  "none-r34-skip-target-negative-control-not-repeated",
+                   "commands_modified":  "only-when-explicit-mode-file-active",
+                   "pso_modified":  false
+               },
+    "artifact":  {
+                     "filename":  "reshade-d3dmetal-presented-frame-producer-chain-v79-r37-74465aecc23408a96286080a346d009bdf9e81b5.zip",
+                     "sha256":  "35a2206e6996196df864d1eadd4e2ef66cdaae3065ef41b6547e1a94f4bd4881"
+                 },
+    "expected_runtime":  "zzz-v79-r37-depth1-full-resource-runtime-bundle.zip",
+    "result_markers":  [
+                           "V79_R37_DEPTH1_FULL_RESOURCE_BRANCH_ISOLATION=PASS",
+                           "FINAL_RESTORE_RESULT=PASS",
+                           "V79_R35_REPORT_PACKAGING=PASS"
+                       ],
+    "no_rerun":  false,
+    "notes":  [
+                  "R36 proved the Big Bang is a multi-frame light accumulation but its 16-point output14 grid remained zero.",
+                  "R37 follows output14 into the first downstream depth1 compute and reads complete output16/output17 textures.",
+                  "R37 captures video automatically and gates every continuous clear on full-resource mutation proof."
+              ]
+}
