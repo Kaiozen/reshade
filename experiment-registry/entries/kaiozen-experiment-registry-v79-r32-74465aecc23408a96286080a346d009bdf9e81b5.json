@@ -1,0 +1,28 @@
+{
+    "schema":  "kaiozen-reshade-experiment-registry/v1",
+    "repository":  "Kaiozen/reshade",
+    "branch":  "main",
+    "version":  "V79-R32",
+    "parent":  "V79-R31",
+    "source_commit":  "74465aecc23408a96286080a346d009bdf9e81b5",
+    "build_timestamp":  "20260805-113948",
+    "status":  "BUILT_NOT_RUN",
+    "purpose":  "Load with the original FragForBlit PSO, then manually arm a sidecar feedback stabilizer only after live world entry.",
+    "hotfix":  "PHASE160_RESUME_HOTFIX2_ABSOLUTE_DOTNET_WORKING_DIRECTORY",
+    "artifact":  {
+                     "filename":  "reshade-d3dmetal-presented-frame-producer-chain-v79-r32-74465aecc23408a96286080a346d009bdf9e81b5.zip",
+                     "sha256":  "8e1f9e64e1f971a16e19876ebdb546199e5f5593a120105229ee3bc7bc77b88f"
+                 },
+    "expected_runtime":  "zzz-v79-r32-manually-armed-feedback-stabilizer-runtime-bundle.zip",
+    "result_markers":  [
+                           "V79_R32_MANUALLY_ARMED_FEEDBACK_STABILIZER=PASS",
+                           "FINAL_RESTORE_RESULT=PASS",
+                           "V79_R32_REPORT_PACKAGING=PASS"
+                       ],
+    "no_rerun":  false,
+    "notes":  [
+                  "Patch, shader validation, source verification, MSBuild, and phases 151 through 159 were preserved.",
+                  "HOTFIX2 sets both the PowerShell location and process CurrentDirectory to the build root.",
+                  "Resume begins at workflow 155 / phase 160 and does not rebuild ReShade."
+              ]
+}
