@@ -1,4 +1,4 @@
-name: Build ReShade D3DMetal RTX Physical DXIL Bridge v24.0 x64
+name: Build ReShade D3DMetal V24 HDR Stream Sidecar HOTFIX5 x64
 
 on:
   workflow_dispatch:
@@ -38,6 +38,7 @@ jobs:
           path: _v24_assets
           sparse-checkout: |
             .github/v24
+            .github/v24hdr
           sparse-checkout-cone-mode: false
           fetch-depth: 1
 
@@ -3577,6 +3578,173 @@ jobs:
 
           Write-Host "Source verification passed."
 
+      - name: Prepare pinned ZZZ RenoDX shader source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $RenoCommit = "ddd6d593ed70eb1a2357ae79e4142c3877f9243e"
+          if (Test-Path "_renodx_shader_source") {
+            Remove-Item "_renodx_shader_source" -Recurse -Force
+          }
+          git clone --recursive https://github.com/hengtek/renodx-zzz.git _renodx_shader_source
+          git -C _renodx_shader_source checkout --detach $RenoCommit
+          git -C _renodx_shader_source submodule sync --recursive
+          git -C _renodx_shader_source submodule update --init --recursive --force
+          $Head = (git -C _renodx_shader_source rev-parse HEAD).Trim()
+          if ($Head -ne $RenoCommit) {
+            throw "Pinned RenoDX commit mismatch: $Head"
+          }
+          Write-Host "V24HDR_RENODX_PINNED_COMMIT=$Head"
+          Write-Host "V24HDR_RENODX_PINNED_COMMIT=PASS"
+
+      - name: Bake RenoDX HDR constants and remove injection binding
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python "_v24_assets/.github/v24hdr/bake_renodx_constants.py" `
+            "_renodx_shader_source/src/games/zenless-zone-zero/shared.h"
+          if ($LASTEXITCODE -ne 0) { throw "RenoDX constant bake failed." }
+
+          $Shared = Get-Content `
+            "_renodx_shader_source/src/games/zenless-zone-zero/shared.h" `
+            -Raw
+          if ($Shared.Contains("register(b13") -or $Shared.Contains("injectedData.")) {
+            throw "Dynamic RenoDX shader injection survived the bake."
+          }
+          Write-Host "V24HDR_SHADER_INJECTION_REMOVAL=PASS"
+
+          # HOTFIX3: do not recursively discover crc32_hash.hpp. The pinned RenoDX
+          # repository intentionally contains another copy inside its ReShade submodule.
+          # The implementation RenoDX itself exposes to its own code is the top-level
+          # include/crc32_hash.hpp from the already hash-pinned RenoDX commit.
+          $CrcHeader = Get-Item -LiteralPath "_renodx_shader_source/include/crc32_hash.hpp" -ErrorAction Stop
+          $CrcText = Get-Content -LiteralPath $CrcHeader.FullName -Raw
+          foreach ($RequiredCrcMarker in @(
+            "inline uint32_t compute_crc32",
+            "0xEDB88320",
+            "uint32_t crc = 0xFFFFFFFF",
+            "return ~crc"
+          )) {
+            if (-not $CrcText.Contains($RequiredCrcMarker)) {
+              throw "Pinned RenoDX include/crc32_hash.hpp semantic marker missing: $RequiredCrcMarker"
+            }
+          }
+          Copy-Item $CrcHeader.FullName "source/d3d12/v24hdr_crc32_hash.hpp" -Force
+          $CrcHash = (Get-FileHash "source/d3d12/v24hdr_crc32_hash.hpp" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "V24HDR_PINNED_CRC_HEADER_RELATIVE=include/crc32_hash.hpp"
+          Write-Host "V24HDR_PINNED_CRC_HEADER=$($CrcHeader.FullName)"
+          Write-Host "V24HDR_PINNED_CRC_HEADER_SHA256=$CrcHash"
+          Write-Host "V24HDR_PINNED_CRC_SEMANTIC_GATE=PASS"
+          Write-Host "V24HDR_PINNED_CRC_IMPLEMENTATION=PASS"
+
+      - name: Resolve exact Windows shader compiler toolset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $KitRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
+          $Candidates = @()
+          Get-ChildItem -LiteralPath $KitRoot -Directory | ForEach-Object {
+            try { $Version = [version]$_.Name } catch { return }
+            $Fxc = Join-Path $_.FullName "x64\fxc.exe"
+            $Dxc = Join-Path $_.FullName "x64\dxc.exe"
+            if ((Test-Path -LiteralPath $Fxc) -and (Test-Path -LiteralPath $Dxc)) {
+              $Candidates += [pscustomobject]@{ Version=$Version; Name=$_.Name; FXC=$Fxc; DXC=$Dxc }
+            }
+          }
+          if ($Candidates.Count -eq 0) { throw "No complete Windows SDK shader toolset found." }
+          $Selected = $Candidates | Sort-Object Version -Descending | Select-Object -First 1
+          "V24HDR_SDK_VERSION=$($Selected.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "V24HDR_FXC=$($Selected.FXC)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "V24HDR_DXC=$($Selected.DXC)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "V24HDR_WINDOWS_SDK_VERSION=$($Selected.Name)"
+          Write-Host "V24HDR_FXC=$($Selected.FXC)"
+          Write-Host "V24HDR_DXC=$($Selected.DXC)"
+          Write-Host "V24HDR_SHADER_TOOL_RESOLUTION=PASS"
+
+      - name: Compile only pinned ZZZ replacement shaders
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $GameShaderDir = "_renodx_shader_source/src/games/zenless-zone-zero"
+          $HlslCount = @(Get-ChildItem $GameShaderDir -Recurse -File -Filter "*.hlsl").Count
+          $SlangCount = @(Get-ChildItem $GameShaderDir -Recurse -File -Filter "*.slang").Count
+          Write-Host "V24HDR_ZZZ_HLSL_SOURCE_COUNT=$HlslCount"
+          Write-Host "V24HDR_ZZZ_SLANG_SOURCE_COUNT=$SlangCount"
+          if ($HlslCount -lt 40) { throw "Unexpectedly low ZZZ HLSL source count." }
+          if ($SlangCount -ne 0) { throw "Pinned ZZZ source unexpectedly contains Slang shaders; placeholder is not permitted." }
+
+          # Crash-minimization gate: every hash-addressed replacement in this
+          # pinned ZZZ source must be a pixel shader. Swap-chain proxy shaders
+          # have no 0x hash and are intentionally excluded from transplantation.
+          $HashedShaders = @(Get-ChildItem $GameShaderDir -Recurse -File -Filter "*.hlsl" | Where-Object { $_.Name -match '0x[0-9A-Fa-f]{8}' })
+          $NonPixel = @($HashedShaders | Where-Object { $_.Name -notmatch '\.ps_[0-9]_[0-9]\.hlsl$' })
+          Write-Host "V24HDR_HASHED_SHADER_SOURCE_COUNT=$($HashedShaders.Count)"
+          if ($HashedShaders.Count -lt 40) { throw "Too few hash-addressed ZZZ replacement shaders." }
+          if ($NonPixel.Count -ne 0) {
+            $Observed = ($NonPixel | ForEach-Object { $_.FullName }) -join "; "
+            throw "Pinned ZZZ source contains non-pixel hash-addressed replacements: $Observed"
+          }
+          Write-Host "V24HDR_PIXEL_SHADER_ONLY_SOURCE_GATE=PASS"
+          Write-Host "V24HDR_ZZZ_SHADER_SOURCE_SHAPE=PASS"
+
+          $Build = "_renodx_shader_build"
+          if (Test-Path $Build) { Remove-Item $Build -Recurse -Force }
+          $SlangPlaceholder = "C:/Windows/System32/where.exe"
+
+          # windows-latest can be backed by VS 2022 or VS 2026. Resolve from
+          # the CMake generators actually installed on the runner and keep v143,
+          # which is available as the compatibility toolset on the VS 2026 image.
+          $CmakeHelp = (& cmake --help | Out-String)
+          if ($CmakeHelp.Contains("Visual Studio 18 2026")) {
+            $V24HdrGenerator = "Visual Studio 18 2026"
+          } elseif ($CmakeHelp.Contains("Visual Studio 17 2022")) {
+            $V24HdrGenerator = "Visual Studio 17 2022"
+          } else {
+            throw "No supported Visual Studio CMake generator found (need VS 18 2026 or VS 17 2022)."
+          }
+          Write-Host "V24HDR_CMAKE_GENERATOR=$V24HdrGenerator"
+          Write-Host "V24HDR_CMAKE_TOOLSET=v143"
+          Write-Host "V24HDR_CMAKE_GENERATOR_RESOLUTION=PASS"
+
+          cmake `
+            -S "_renodx_shader_source" `
+            -B $Build `
+            -G $V24HdrGenerator `
+            -A x64 `
+            -T v143 `
+            "-DCMAKE_SYSTEM_VERSION=$env:V24HDR_SDK_VERSION" `
+            "-DFXC_BIN:FILEPATH=$env:V24HDR_FXC" `
+            "-DDXC_BIN:FILEPATH=$env:V24HDR_DXC" `
+            "-DSLANGC_BIN:FILEPATH=$SlangPlaceholder"
+          if ($LASTEXITCODE -ne 0) { throw "RenoDX shader CMake configure failed." }
+          Write-Host "V24HDR_RENODX_SHADER_CMAKE=PASS"
+
+          cmake --build $Build --config Release --target zenless-zone-zero-shaders -- /m:1 /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "ZZZ shader target build failed." }
+          Write-Host "V24HDR_RENODX_SHADER_BUILD=PASS"
+
+          python "_v24_assets/.github/v24hdr/generate_shader_header.py" `
+            $Build `
+            "source/d3d12/v24hdr_renodx_shaders.hpp" `
+            "v24hdr-shader-manifest.txt"
+          if ($LASTEXITCODE -ne 0) { throw "Shader header generation failed." }
+
+          $Manifest = Get-Content "v24hdr-shader-manifest.txt" -Raw
+          if (-not $Manifest.Contains("DX11_SHADER_VARIANTS=EXCLUDED")) { throw "DX11 exclusion gate failed." }
+          if (-not $Manifest.Contains("DX12_SM5X_VARIANTS=PREFERRED")) { throw "DX12 SM5x selection gate failed." }
+          Add-Content -LiteralPath "v24hdr-shader-manifest.txt" -Value "SHADER_STAGE=PIXEL_ONLY_VERIFIED"
+          Write-Host "V24HDR_D3D12_SHADER_MANIFEST=PASS"
+
+      - name: Apply V24 HDR Stream Sidecar HOTFIX5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python "_v24_assets/.github/v24hdr/patch_v24_native_hdr.py"
+          if ($LASTEXITCODE -ne 0) { throw "V24 HDR Stream Sidecar HOTFIX5 source patch failed." }
+          python "_v24_assets/.github/v24hdr/verify_v24_native_hdr.py"
+          if ($LASTEXITCODE -ne 0) { throw "V24 HDR Stream Sidecar HOTFIX5 source verification failed." }
+          Write-Host "V24HDR5_POST_V24_SOURCE_PATCH=PASS"
+
       - name: Build ReShade solution
         shell: pwsh
         run: |
@@ -3783,6 +3951,46 @@ jobs:
             -f $machine
           )
 
+      - name: Verify V24 HDR Stream Sidecar HOTFIX5 binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dll = "$env:GITHUB_WORKSPACE\ReShade64.dll"
+          $bytes = [System.IO.File]::ReadAllBytes($dll)
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+          $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
+          $required = @(
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: ACTIVE",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: GRAPHICS_PSO_CALL",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: STREAM_PSO_CALL",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: PS_CRC_OBSERVED",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: PS_ADAPTIVE_MATCH",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX7: V31_PINNED_MAP",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: SIDECAR_SUCCESS",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: HDR_READY",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: PSO_BIND_SUBSTITUTE",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: RESET_PSO_SUBSTITUTE",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: SWAPCHAIN_CREATE_SDR_WAITING_FOR_SHADER_ARM",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: SWAPCHAIN_CREATE_ARMED R8_TO_R10",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: RESIZE_SDR_WAITING_FOR_SHADER_ARM",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: RESIZE_ARMED R8_TO_R10",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: HDR10_SET",
+            "KAIOZEN V24 HDR SIDECAR HOTFIX5: HDR10_UNSUPPORTED",
+            "KAIOZEN_ZZZ_NATIVE_HDR.ENABLE"
+          )
+          foreach ($marker in $required) {
+            if (-not ($ascii.Contains($marker) -or $utf16.Contains($marker))) {
+              throw "V24HDR5 binary marker missing: $marker"
+            }
+          }
+          if (-not (Test-Path "v24hdr-shader-manifest.txt")) { throw "Shader manifest missing." }
+          $manifest = Get-Content "v24hdr-shader-manifest.txt" -Raw
+          if (-not $manifest.Contains("B13_SPACE50=ABSENT")) { throw "Shader injection manifest gate failed." }
+          if (-not $manifest.Contains("SHADER_STAGE=PIXEL_ONLY_VERIFIED")) { throw "Pixel-only shader manifest gate failed." }
+          if (-not $manifest.Contains("ADAPTIVE_FINGERPRINTS=DXBC_SIGNATURE_PLUS_EXACT_SIZE")) { throw "Adaptive fingerprint manifest gate failed." }
+          Write-Host "V24HDR5_BINARY_MARKERS=PASS"
+          Write-Host "V24HDR5_SHADER_MANIFEST_BINARY_GATE=PASS"
+
       - name: Create build information
         shell: pwsh
         run: |
@@ -3849,13 +4057,35 @@ jobs:
 
           Get-Content build-info.txt
 
-      - name: Upload physical DXIL bridge v24
+      - name: Append V24 HDR Stream Sidecar HOTFIX5 build information
+        shell: pwsh
+        run: |
+          "Build extension: Kaiozen ZZZ V24 HDR Stream Sidecar HOTFIX5" | Add-Content build-info.txt
+          "RenoDX source commit: ddd6d593ed70eb1a2357ae79e4142c3877f9243e" | Add-Content build-info.txt
+          "Runtime RenoDX addon: NOT LOADED" | Add-Content build-info.txt
+          "Shader injection: baked constants; b13/space50 absent" | Add-Content build-info.txt
+          "Shader matching: exact pinned RenoDX CRC32 implementation" | Add-Content build-info.txt
+          "Game-visible PSO identity: original native PSO is always returned" | Add-Content build-info.txt
+          "Replacement architecture: matching RenoDX pixel shaders compile into private native PSO sidecars" | Add-Content build-info.txt
+          "PSO creation coverage: CreateGraphicsPipelineState + ID3D12Device2::CreatePipelineState stream" | Add-Content build-info.txt
+          "Pipeline library coverage: LoadGraphicsPipeline + ID3D12PipelineLibrary1::LoadPipeline" | Add-Content build-info.txt
+          "Command recording: Reset/SetPipelineState substitute sidecars only while HDR_ACTIVE" | Add-Content build-info.txt
+          "HDR activation: blocked until a critical UberPost sidecar is created successfully" | Add-Content build-info.txt
+          "Zero-sidecar behavior: coherent R8 SDR; previous zero-replacement R10 cyan failure is impossible by design" | Add-Content build-info.txt
+          "Swapchain behavior: natural ZZZ Create/Resize transitions R8->R10 only after HDR_READY" | Add-Content build-info.txt
+          "Color space: HDR10 ST2084 support-gated; R10 creation or colorspace failure rolls back to R8" | Add-Content build-info.txt
+          "Fail-safe: all new behavior requires KAIOZEN_ZZZ_NATIVE_HDR.ENABLE next to game executable" | Add-Content build-info.txt
+          Get-Content build-info.txt
+
+      - name: Upload V24 HDR Stream Sidecar HOTFIX5
         uses: actions/upload-artifact@v4
         with:
-          name: reshade-d3dmetal-rtx-physical-dxil-bridge-v24-${{ github.sha }}
+          name: reshade-d3dmetal-zzz-v24-hdr-stream-sidecar-hotfix5
           path: |
             ReShade64.dll
             build-info.txt
             v24-patch-report.txt
+            v24hdr-patch-report.txt
+            v24hdr-shader-manifest.txt
           if-no-files-found: error
           retention-days: 14
