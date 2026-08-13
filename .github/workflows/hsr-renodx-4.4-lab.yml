@@ -1,0 +1,277 @@
+name: HSR RenoDX 4.4 Lab
+
+on:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - ".github/workflows/hsr-renodx-4.4-lab.yml"
+      - ".github/hsr-renodx/**"
+
+permissions:
+  contents: read
+
+env:
+  RESHADE_REF: v6.7.3
+  RESHADE_SHA: 4a50d1eddace85734871d91792ff214f13f66c01
+  RENODX_REF: ee9ddee35e125e95e5fd242c1431b2a253cc9068
+
+jobs:
+  reshade:
+    name: ReShade DX11 full-addon
+    runs-on: windows-2022
+    steps:
+      - name: Checkout lab control files
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned ReShade
+        uses: actions/checkout@v4
+        with:
+          repository: crosire/reshade
+          ref: ${{ env.RESHADE_REF }}
+          path: reshade
+          submodules: recursive
+
+      - name: Verify ReShade pin
+        shell: pwsh
+        run: |
+          $actual = (git -C reshade rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:RESHADE_SHA.ToLowerInvariant()) {
+            throw "Unexpected ReShade commit: $actual"
+          }
+          "RESHADE_PIN=PASS"
+
+      - name: Configure MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Build ReShade x64 Release
+        shell: pwsh
+        run: |
+          msbuild reshade\ReShade.sln `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m:1 `
+            /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "ReShade build failed." }
+
+      - name: Package ReShade payload
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem reshade -Recurse -File -Filter ReShade64.dll |
+            Where-Object { $_.FullName -notmatch "\\deps\\" } |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (-not $dll) { throw "ReShade64.dll was not produced." }
+
+          $exports = dumpbin /exports $dll.FullName | Out-String
+          if ($exports -notmatch "ReShadeRegisterAddon") {
+            throw "Built ReShade does not expose ReShadeRegisterAddon."
+          }
+
+          New-Item -ItemType Directory -Force payload-reshade | Out-Null
+          Copy-Item $dll.FullName payload-reshade\ReShade64.dll -Force
+          $license = Get-ChildItem reshade -File | Where-Object { $_.Name -match '^LICENSE' } | Select-Object -First 1
+          if ($license) { Copy-Item $license.FullName payload-reshade\ReShade-LICENSE.txt -Force }
+          $hash = (Get-FileHash payload-reshade\ReShade64.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "KAIOZEN_HSR_RENODX_LAB_PAYLOAD=1",
+            "COMPONENT=ReShade64.dll",
+            "SOURCE=crosire/reshade",
+            "REF=$env:RESHADE_REF",
+            "COMMIT=$env:RESHADE_SHA",
+            "CONFIGURATION=Release|x64",
+            "FULL_ADDON_EXPORT=ReShadeRegisterAddon",
+            "SHA256=$hash"
+          ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
+          Get-Content payload-reshade\manifest.txt
+
+      - name: Upload ReShade payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hsr-reshade-dx11-full-addon
+          path: payload-reshade
+          if-no-files-found: error
+          retention-days: 14
+
+  renodx:
+    name: RenoDX ${{ matrix.variant }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [register-only, shader-only, full-upstream]
+    steps:
+      - name: Checkout lab control files
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned RenoDX
+        uses: actions/checkout@v4
+        with:
+          repository: clshortfuse/renodx
+          ref: ${{ env.RENODX_REF }}
+          path: renodx
+          submodules: recursive
+
+      - name: Verify RenoDX pin
+        shell: pwsh
+        run: |
+          $actual = (git -C renodx rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:RENODX_REF.ToLowerInvariant()) {
+            throw "Unexpected RenoDX commit: $actual"
+          }
+          "RENODX_PIN=PASS"
+
+      - name: Apply isolation variant
+        if: matrix.variant != 'full-upstream'
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_hsr_variant.py `
+            --file renodx\src\games\honkai-starrail\addon.cpp `
+            --variant "${{ matrix.variant }}"
+          if ($LASTEXITCODE -ne 0) { throw "Variant patch failed." }
+
+      - name: Set up RenoDX shader tools
+        shell: pwsh
+        working-directory: renodx
+        run: |
+          .\scripts\setup-dev-env.ps1 -Update -Tools dxc,slang,glslang
+
+      - name: Configure MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure RenoDX
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --preset vs-x64
+
+      - name: Build HSR RenoDX target
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --build --preset vs-x64-release --target honkai-starrail --verbose
+
+      - name: Package HSR RenoDX variant
+        shell: pwsh
+        run: |
+          $addon = Get-ChildItem renodx -Recurse -File -Filter renodx-honkai-starrail.addon64 |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (-not $addon) { throw "renodx-honkai-starrail.addon64 was not produced." }
+
+          $variant = "${{ matrix.variant }}"
+          $outName = switch ($variant) {
+            "register-only" { "renodx-hsr-register-only.addon64" }
+            "shader-only"   { "renodx-hsr-shader-only.addon64" }
+            default          { "renodx-hsr-full-upstream.addon64" }
+          }
+          $dir = "payload-renodx-$variant"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item $addon.FullName (Join-Path $dir $outName) -Force
+
+          $bytes = [IO.File]::ReadAllBytes((Join-Path $dir $outName))
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          if ($ascii -notmatch "RenoDX") { throw "Built add-on is missing RenoDX marker." }
+          if ($variant -eq "register-only" -and $ascii -notmatch "KAIOZEN_HSR_44_REGISTER_ONLY") {
+            throw "Register-only binary marker missing."
+          }
+          if ($variant -eq "shader-only" -and $ascii -notmatch "KAIOZEN_HSR_44_SHADER_ONLY") {
+            throw "Shader-only binary marker missing."
+          }
+
+          $license = Get-ChildItem renodx -File | Where-Object { $_.Name -match '^LICENSE' } | Select-Object -First 1
+          if ($license) { Copy-Item $license.FullName (Join-Path $dir RenoDX-LICENSE.txt) -Force }
+          $hash = (Get-FileHash (Join-Path $dir $outName) -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "KAIOZEN_HSR_RENODX_LAB_PAYLOAD=1",
+            "COMPONENT=$outName",
+            "VARIANT=$variant",
+            "SOURCE=clshortfuse/renodx",
+            "COMMIT=$env:RENODX_REF",
+            "HSR_SOURCE_FOLDER=src/games/honkai-starrail",
+            "SHA256=$hash"
+          ) | Set-Content (Join-Path $dir manifest.txt) -Encoding ascii
+          Get-Content (Join-Path $dir manifest.txt)
+
+      - name: Upload HSR RenoDX variant
+        uses: actions/upload-artifact@v4
+        with:
+          name: hsr-renodx-${{ matrix.variant }}
+          path: payload-renodx-${{ matrix.variant }}
+          if-no-files-found: error
+          retention-days: 14
+
+  devkit:
+    name: RenoDX DevKit
+    runs-on: windows-2022
+    steps:
+      - name: Checkout pinned RenoDX
+        uses: actions/checkout@v4
+        with:
+          repository: clshortfuse/renodx
+          ref: ${{ env.RENODX_REF }}
+          path: renodx
+          submodules: recursive
+
+      - name: Verify RenoDX pin
+        shell: pwsh
+        run: |
+          $actual = (git -C renodx rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:RENODX_REF.ToLowerInvariant()) { throw "Unexpected RenoDX commit: $actual" }
+
+      - name: Set up RenoDX shader tools
+        shell: pwsh
+        working-directory: renodx
+        run: .\scripts\setup-dev-env.ps1 -Update -Tools dxc,slang,glslang
+
+      - name: Configure MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure RenoDX
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --preset vs-x64
+
+      - name: Build DevKit and MCP bridge
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --build --preset vs-x64-release --target devkit mcp_bridge --verbose
+
+      - name: Package DevKit payload
+        shell: pwsh
+        run: |
+          $devkit = Get-ChildItem renodx -Recurse -File -Filter renodx-devkit.addon64 |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          $bridge = Get-ChildItem renodx -Recurse -File -Filter renodx-mcp-bridge.exe |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $devkit) { throw "renodx-devkit.addon64 was not produced." }
+          if (-not $bridge) { throw "renodx-mcp-bridge.exe was not produced." }
+
+          New-Item -ItemType Directory -Force payload-devkit | Out-Null
+          Copy-Item $devkit.FullName payload-devkit\renodx-devkit.addon64 -Force
+          Copy-Item $bridge.FullName payload-devkit\renodx-mcp-bridge.exe -Force
+          $license = Get-ChildItem renodx -File | Where-Object { $_.Name -match '^LICENSE' } | Select-Object -First 1
+          if ($license) { Copy-Item $license.FullName payload-devkit\RenoDX-LICENSE.txt -Force }
+          $devkitHash = (Get-FileHash payload-devkit\renodx-devkit.addon64 -Algorithm SHA256).Hash.ToLowerInvariant()
+          $bridgeHash = (Get-FileHash payload-devkit\renodx-mcp-bridge.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "KAIOZEN_HSR_RENODX_LAB_PAYLOAD=1",
+            "COMPONENT=RenoDX DevKit",
+            "SOURCE=clshortfuse/renodx",
+            "COMMIT=$env:RENODX_REF",
+            "DEVKIT_SHA256=$devkitHash",
+            "MCP_BRIDGE_SHA256=$bridgeHash"
+          ) | Set-Content payload-devkit\manifest.txt -Encoding ascii
+
+      - name: Upload DevKit payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hsr-renodx-devkit
+          path: payload-devkit
+          if-no-files-found: error
+          retention-days: 14
