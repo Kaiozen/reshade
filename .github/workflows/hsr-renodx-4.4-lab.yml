@@ -52,7 +52,7 @@ jobs:
           msbuild reshade\ReShade.sln `
             /t:Build `
             /p:Configuration=Release `
-            /p:Platform=x64 `
+            /p:Platform=64-bit `
             /m:1 `
             /verbosity:minimal
           if ($LASTEXITCODE -ne 0) { throw "ReShade build failed." }
@@ -82,7 +82,7 @@ jobs:
             "SOURCE=crosire/reshade",
             "REF=$env:RESHADE_REF",
             "COMMIT=$env:RESHADE_SHA",
-            "CONFIGURATION=Release|x64",
+            "CONFIGURATION=Release|64-bit",
             "FULL_ADDON_EXPORT=ReShadeRegisterAddon",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
