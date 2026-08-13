@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 env:
-  RESHADE_REF: v6.7.3
-  RESHADE_SHA: 4a50d1eddace85734871d91792ff214f13f66c01
+  RESHADE_REF: v6.8.0
+  RESHADE_SHA: 18deaa52de0c425a78b329e9cb3c497281cd00ec
   RENODX_REF: ee9ddee35e125e95e5fd242c1431b2a253cc9068
 
 jobs:
