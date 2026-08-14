@@ -432,7 +432,7 @@ DIRECT_RGBA8_PQ = r"""
 
 extern "C" __declspec(dllexport) const char*
 KAIOZEN_HSR_LAB_VARIANT =
-    "KAIOZEN_HSR_44_RGBA8_PQ_HOTFIX_K";
+    "KAIOZEN_HSR_44_RGBA8_PQ_HOTFIX_L";
 
 static void KaiozenApplyPQHDR(
     reshade::api::swapchain* swapchain,
@@ -639,34 +639,56 @@ def patch_pq_transport(game_dir: Path) -> None:
         helper = r"""
 float3 FinalizeOutputPQ8(float3 color) {
   //
-  // HOTFIX K
+  // KAIOZEN HOTFIX L
   //
-  // Keep RenoDX HDR luminance intact.
-  // Only correct excessive chroma in the final HDR10 transport.
+  // Goals:
+  // 1. Preserve RenoDX diffuse/reference white.
+  // 2. Preserve RenoDX UI brightness.
+  // 3. Expand only genuine scene highlights into HDR headroom.
+  // 4. Correct excessive chroma without changing luminance.
+  // 5. Deliver BT.2020 + ST.2084 PQ.
   //
 
-  color = clamp(color, 0.f, 8.f);
+  color = max(color, 0.f);
+  color = min(color, 16.f);
 
+  // HSR RenoDX output is gamma-domain at this point.
   float3 linear709 =
       renodx::color::gamma::DecodeSafe(
           color,
           2.2f);
 
+  //
+  // PostToneMapScale already applies:
+  //
+  // GameNits / UINits
+  //
+  // Therefore multiplying by UI nits restores
+  // absolute RenoDX scene luminance.
+  //
   float3 nits709 =
       linear709
       * injectedData.toneMapUINits;
 
+  float referenceWhite =
+      max(
+          injectedData.toneMapGameNits,
+          1.f);
+
+  float peakNits =
+      max(
+          injectedData.toneMapPeakNits,
+          referenceWhite);
+
   nits709 =
-      clamp(
+      max(
           nits709,
-          0.f,
-          injectedData.toneMapPeakNits);
+          0.f);
 
   //
-  // LUMA-PRESERVING DESATURATION:
-  // brightness remains unchanged.
+  // Linear-light BT.709 luminance.
   //
-  float luma =
+  float sceneY =
       dot(
           nits709,
           float3(
@@ -674,25 +696,151 @@ float3 FinalizeOutputPQ8(float3 color) {
               0.7151522f,
               0.0721750f));
 
-  nits709 =
+  float targetY = sceneY;
+
+  //
+  // HDR HIGHLIGHT EXPANSION
+  //
+  // <= reference white:
+  //     completely untouched.
+  //
+  // > reference white:
+  //     expand progressively into the available
+  //     203 -> 1000 nit headroom.
+  //
+  // This preserves normal scene brightness while
+  // making lights/reflections/effects genuinely HDR.
+  //
+  if (sceneY > referenceWhite) {
+    float sourceSpan =
+        max(
+            peakNits - referenceWhite,
+            1.f);
+
+    float normalizedHighlight =
+        saturate(
+            (sceneY - referenceWhite)
+            / sourceSpan);
+
+    //
+    // Square-root shoulder is intentionally expansive:
+    // small HDR excursions become visibly separated
+    // from diffuse white, while remaining monotonic
+    // and bounded at peak.
+    //
+    float expandedHighlight =
+        sqrt(normalizedHighlight);
+
+    targetY =
+        referenceWhite
+        + expandedHighlight
+        * (peakNits - referenceWhite);
+
+    targetY =
+        min(
+            targetY,
+            peakNits);
+  }
+
+  //
+  // Scale RGB by ONE scalar.
+  //
+  // This changes luminance without changing hue/chromaticity.
+  //
+  float luminanceScale =
+      targetY
+      / max(sceneY, 0.0001f);
+
+  float3 hdr709 =
+      nits709
+      * luminanceScale;
+
+
+  // ----------------------------------------------------------
+  // LUMA-PRESERVING CHROMA COMPRESSION
+  // ----------------------------------------------------------
+  //
+  // The previous fixed 90% saturation reduction was too weak.
+  //
+  // This version adapts:
+  //   low-chroma pixels -> almost unchanged
+  //   highly saturated pixels -> stronger correction
+  //
+  // Both endpoints have the SAME luminance targetY,
+  // so this does not dim the HDR image.
+  //
+
+  float3 neutral =
+      float3(
+          targetY,
+          targetY,
+          targetY);
+
+  float3 chromaVector =
+      hdr709 - neutral;
+
+  float chromaMagnitude =
+      max(
+          max(
+              abs(chromaVector.r),
+              abs(chromaVector.g)),
+          abs(chromaVector.b));
+
+  float normalizedChroma =
+      saturate(
+          chromaMagnitude
+          / max(targetY, 1.f));
+
+  //
+  // Neutral/natural colors: 94%
+  // Very saturated colors:    76%
+  //
+  float chromaScale =
       lerp(
-          float3(luma, luma, luma),
-          nits709,
-          0.90f);
+          0.94f,
+          0.76f,
+          normalizedChroma);
 
-  float3 nits2020 =
+  hdr709 =
+      neutral
+      + chromaVector
+      * chromaScale;
+
+  hdr709 =
+      max(
+          hdr709,
+          0.f);
+
+
+  // ----------------------------------------------------------
+  // BT.709 -> BT.2020
+  // ----------------------------------------------------------
+
+  float3 hdr2020 =
       renodx::color::bt2020::from::BT709(
-          nits709);
+          hdr709);
 
-  nits2020 =
-      clamp(
-          nits2020,
-          0.f,
-          injectedData.toneMapPeakNits);
+  hdr2020 =
+      max(
+          hdr2020,
+          0.f);
+
+  //
+  // Bound all channels to RenoDX peak.
+  //
+  hdr2020 =
+      min(
+          hdr2020,
+          peakNits);
+
+
+  // ----------------------------------------------------------
+  // ABSOLUTE NITS -> ST.2084 PQ
+  // ----------------------------------------------------------
 
   float3 pq =
       renodx::color::pq::EncodeSafe(
-          nits2020,
+          hdr2020,
           1.f);
 
   return saturate(pq);
