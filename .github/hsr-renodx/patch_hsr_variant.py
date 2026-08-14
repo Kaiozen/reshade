@@ -130,7 +130,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
 }'''
 
 
-R10_HDR10 = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_R10_HDR10";
+R10_HDR10 = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_R10_HDR10_LATE";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
@@ -153,6 +153,17 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
       // ==========================================================
 
       renodx::mods::swapchain::SetUseHDR10(true);
+
+      // HOTFIX D:
+      // Do NOT replace Unity's swapchain format during creation.
+      //
+      // Let HSR create and initialize its native RGBA8 swapchain first.
+      // After the game reaches its first Present, ask RenoDX to resize
+      // that already-initialized swapchain to R10 HDR10.
+      renodx::mods::swapchain::use_resize_buffer = true;
+      renodx::mods::swapchain::use_resize_buffer_on_present = true;
+      renodx::mods::swapchain::use_resize_buffer_on_demand = false;
+      renodx::mods::swapchain::use_resize_buffer_on_set_full_screen = false;
 
       // Remove unrelated variables from this experiment.
       renodx::mods::swapchain::use_resource_cloning = false;
