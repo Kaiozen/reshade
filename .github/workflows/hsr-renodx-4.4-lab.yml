@@ -133,14 +133,14 @@ jobs:
             --variant "${{ matrix.variant }}"
           if ($LASTEXITCODE -ne 0) { throw "Variant patch failed." }
 
-      - name: Apply full-upstream HOTFIX D - delayed R10 HDR10 output
+      - name: Apply full-upstream HOTFIX E - HSR Display Proxy scRGB
         if: matrix.variant == 'full-upstream'
         shell: pwsh
         run: |
           python .github\hsr-renodx\patch_hsr_variant.py `
             --file renodx\src\games\honkai-starrail\addon.cpp `
-            --variant "r10-hdr10"
-          if ($LASTEXITCODE -ne 0) { throw "R10 HDR10 patch failed." }
+            --variant "proxy-scrgb"
+          if ($LASTEXITCODE -ne 0) { throw "Display proxy patch failed." }
 
       - name: Set up RenoDX shader tools
         shell: pwsh
@@ -191,8 +191,8 @@ jobs:
             throw "Shader-only binary marker missing."
           }
 
-          if ($variant -eq "full-upstream" -and $ascii -notmatch "KAIOZEN_HSR_44_R10_HDR10_LATE") {
-            throw "Delayed R10 HDR10 binary marker missing."
+          if ($variant -eq "full-upstream" -and $ascii -notmatch "KAIOZEN_HSR_44_PROXY_SCRGB") {
+            throw "Display proxy binary marker missing."
           }
 
           $license = Get-ChildItem renodx -File | Where-Object { $_.Name -match '^LICENSE' } | Select-Object -First 1

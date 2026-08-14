@@ -16,6 +16,7 @@ def find_function_span(text: str, signature: str) -> tuple[int, int]:
 
     depth = 0
     i = brace
+
     in_string = False
     in_char = False
     in_line_comment = False
@@ -115,6 +116,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
+
       renodx::mods::shader::force_pipeline_cloning = true;
       break;
 
@@ -124,60 +126,83 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   }
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
-  renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+  renodx::mods::shader::Use(
+      fdw_reason,
+      custom_shaders,
+      &shader_injection);
 
   return TRUE;
 }'''
 
 
-R10_HDR10 = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_R10_HDR10_LATE";
+PROXY_SCRGB = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_PROXY_SCRGB";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
 
-      // Keep the shader replacement path already proven stable on HSR 4.4.
+      // ==========================================================
+      // KAIOZEN HSR MAC DISPLAY-PROXY HDR
+      //
+      // Keep HSR / Unity primary presentation untouched.
+      //
+      // PRIMARY:
+      //   R8G8B8A8_UNORM
+      //   normal Unity / D3DMetal path
+      //
+      // HDR OUTPUT:
+      //   separate RenoDX display proxy
+      //   R16G16B16A16_FLOAT
+      //   extended_sRGB_linear / scRGB
+      // ==========================================================
+
+      // Already proven stable in shader-only.
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // ==========================================================
-      // KAIOZEN HSR MAC R10/HDR10 DIAGNOSTIC
-      //
-      // Inspired by the working Kaiozen ZZZ D3DMetal HDR path.
-      //
-      // Primary output:
-      //   R10G10B10A2_UNORM
-      //   HDR10 / ST2084
-      //
-      // Explicitly avoid the failing HSR upstream FP16/scRGB path.
-      // ==========================================================
+      // HSR's existing final proxy shader outputs linear scRGB.
+      // Explicitly select FP16/scRGB, NOT HDR10/R10.
+      renodx::mods::swapchain::SetUseHDR10(false);
 
-      renodx::mods::swapchain::SetUseHDR10(true);
-
-      // HOTFIX D:
-      // Do NOT replace Unity's swapchain format during creation.
+      // This is the critical architectural change.
       //
-      // Let HSR create and initialize its native RGBA8 swapchain first.
-      // After the game reaches its first Present, ask RenoDX to resize
-      // that already-initialized swapchain to R10 HDR10.
-      renodx::mods::swapchain::use_resize_buffer = true;
-      renodx::mods::swapchain::use_resize_buffer_on_present = true;
+      // Do not make HSR's own Unity swapchain the HDR swapchain.
+      // Make RenoDX create/use a separate presentation device.
+      renodx::mods::swapchain::use_device_proxy = true;
+
+      // The proxy owns HDR color space.
+      // Do not change color space on HSR's own swapchain.
+      renodx::mods::swapchain::set_color_space = false;
+
+      // Proxy/shared-resource transport.
+      renodx::mods::swapchain::use_resource_cloning = true;
+
+      // HSR's own upstream final-output proxy shaders.
+      renodx::mods::swapchain::swap_chain_proxy_vertex_shader =
+          __swap_chain_proxy_vertex_shader;
+
+      renodx::mods::swapchain::swap_chain_proxy_pixel_shader =
+          __swap_chain_proxy_pixel_shader;
+
+      // HSR DX11 injection uses b13.
+      renodx::mods::swapchain::expected_constant_buffer_index = 13;
+      renodx::mods::swapchain::expected_constant_buffer_space = 0;
+
+      // Start in maximum-synchronization mode.
+      // We optimize this only AFTER it renders correctly.
+      renodx::mods::swapchain::device_proxy_wait_idle_source = true;
+      renodx::mods::swapchain::device_proxy_wait_idle_destination = true;
+
+      // Absolutely no direct Unity swapchain resize path.
+      renodx::mods::swapchain::use_resize_buffer = false;
+      renodx::mods::swapchain::use_resize_buffer_on_present = false;
       renodx::mods::swapchain::use_resize_buffer_on_demand = false;
       renodx::mods::swapchain::use_resize_buffer_on_set_full_screen = false;
 
-      // Remove unrelated variables from this experiment.
-      renodx::mods::swapchain::use_resource_cloning = false;
+      // Don't alter Unity's window/presentation policy.
       renodx::mods::swapchain::prevent_full_screen = false;
       renodx::mods::swapchain::force_borderless = false;
       renodx::mods::swapchain::force_screen_tearing = false;
-
-      // Keep color-space switching ON because this is specifically
-      // testing the HDR10/ST2084 presentation path.
-      renodx::mods::swapchain::set_color_space = true;
-
-      // No proxy shaders.
-      // No HSR internal FP16 upgrade targets.
-      // No extra resource upgrades.
 
       break;
 
@@ -187,8 +212,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   }
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
-  renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
-  renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+
+  renodx::mods::swapchain::Use(
+      fdw_reason,
+      &shader_injection);
+
+  renodx::mods::shader::Use(
+      fdw_reason,
+      custom_shaders,
+      &shader_injection);
 
   return TRUE;
 }'''
@@ -196,32 +228,42 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+
     ap.add_argument("--file", required=True)
+
     ap.add_argument(
         "--variant",
         required=True,
         choices=[
             "register-only",
             "shader-only",
-            "r10-hdr10",
+            "proxy-scrgb",
         ],
     )
+
     args = ap.parse_args()
 
     path = Path(args.file)
     text = path.read_text(encoding="utf-8")
 
-    start, end = find_function_span(text, "BOOL APIENTRY DllMain")
+    start, end = find_function_span(
+        text,
+        "BOOL APIENTRY DllMain"
+    )
 
     if args.variant == "register-only":
         replacement = REGISTER_ONLY
     elif args.variant == "shader-only":
         replacement = SHADER_ONLY
     else:
-        replacement = R10_HDR10
+        replacement = PROXY_SCRGB
 
     text = text[:start] + replacement + text[end:]
-    path.write_text(text, encoding="utf-8")
+
+    path.write_text(
+        text,
+        encoding="utf-8"
+    )
 
     print(f"PATCHED_VARIANT={args.variant}")
     print(f"FILE={path}")
