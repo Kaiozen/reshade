@@ -133,7 +133,7 @@ jobs:
             --variant "${{ matrix.variant }}"
           if ($LASTEXITCODE -ne 0) { throw "Variant patch failed." }
 
-      - name: Apply full-upstream HOTFIX J - RenoDX RGBA8 PQ
+      - name: Apply full-upstream HOTFIX K - RenoDX RGBA8 PQ
         if: matrix.variant == 'full-upstream'
         shell: pwsh
         run: |
@@ -193,8 +193,8 @@ jobs:
             throw "Shader-only binary marker missing."
           }
 
-          if ($variant -eq "full-upstream" -and $ascii -notmatch "KAIOZEN_HSR_44_RGBA8_PQ_FINALPASS") {
-            throw "HOTFIX J binary marker missing."
+          if ($variant -eq "full-upstream" -and $ascii -notmatch "KAIOZEN_HSR_44_RGBA8_PQ_HOTFIX_K") {
+            throw "HOTFIX K binary marker missing."
           }
 
           $license = Get-ChildItem renodx -File | Where-Object { $_.Name -match '^LICENSE' } | Select-Object -First 1

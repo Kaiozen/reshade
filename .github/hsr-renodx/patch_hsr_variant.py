@@ -432,7 +432,7 @@ DIRECT_RGBA8_PQ = r"""
 
 extern "C" __declspec(dllexport) const char*
 KAIOZEN_HSR_LAB_VARIANT =
-    "KAIOZEN_HSR_44_RGBA8_PQ_FINALPASS";
+    "KAIOZEN_HSR_44_RGBA8_PQ_HOTFIX_K";
 
 static void KaiozenApplyPQHDR(
     reshade::api::swapchain* swapchain,
@@ -638,22 +638,64 @@ def patch_pq_transport(game_dir: Path) -> None:
 
         helper = r"""
 float3 FinalizeOutputPQ8(float3 color) {
-  // Use HSR RenoDX's exact upstream final-output math first.
-  float3 scrgb = FinalizeOutput(color);
+  //
+  // HOTFIX K
+  //
+  // Keep RenoDX HDR luminance intact.
+  // Only correct excessive chroma in the final HDR10 transport.
+  //
 
-  // Upstream scRGB convention:
-  // 1.0 linear = 80 nits.
-  float3 bt709_nits = scrgb * 80.f;
+  color = clamp(color, 0.f, 8.f);
 
-  // Convert RenoDX's final linear BT.709 output to HDR10 BT.2020.
-  float3 bt2020_nits =
+  float3 linear709 =
+      renodx::color::gamma::DecodeSafe(
+          color,
+          2.2f);
+
+  float3 nits709 =
+      linear709
+      * injectedData.toneMapUINits;
+
+  nits709 =
+      clamp(
+          nits709,
+          0.f,
+          injectedData.toneMapPeakNits);
+
+  //
+  // LUMA-PRESERVING DESATURATION:
+  // brightness remains unchanged.
+  //
+  float luma =
+      dot(
+          nits709,
+          float3(
+              0.2126729f,
+              0.7151522f,
+              0.0721750f));
+
+  nits709 =
+      lerp(
+          float3(luma, luma, luma),
+          nits709,
+          0.90f);
+
+  float3 nits2020 =
       renodx::color::bt2020::from::BT709(
-          bt709_nits);
+          nits709);
 
-  // Absolute nits -> ST.2084 PQ.
-  return renodx::color::pq::EncodeSafe(
-      bt2020_nits,
-      1.f);
+  nits2020 =
+      clamp(
+          nits2020,
+          0.f,
+          injectedData.toneMapPeakNits);
+
+  float3 pq =
+      renodx::color::pq::EncodeSafe(
+          nits2020,
+          1.f);
+
+  return saturate(pq);
 }
 """
 
