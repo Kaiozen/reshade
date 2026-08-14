@@ -133,15 +133,15 @@ jobs:
             --variant "${{ matrix.variant }}"
           if ($LASTEXITCODE -ne 0) { throw "Variant patch failed." }
 
-      - name: Apply full-upstream HOTFIX I - external-trigger FP16
+      - name: Apply full-upstream HOTFIX J - RenoDX RGBA8 PQ
         if: matrix.variant == 'full-upstream'
         shell: pwsh
         run: |
           python .github\hsr-renodx\patch_hsr_variant.py `
             --file renodx\src\games\honkai-starrail\addon.cpp `
-            --variant "external-trigger-fp16"
+            --variant "direct-rgba8-pq"
           if ($LASTEXITCODE -ne 0) {
-            throw "HOTFIX I external-trigger-FP16 patch failed."
+            throw "HOTFIX J direct-RGBA8-PQ patch failed."
           }
 
       - name: Set up RenoDX shader tools
@@ -193,8 +193,8 @@ jobs:
             throw "Shader-only binary marker missing."
           }
 
-          if ($variant -eq "full-upstream" -and $ascii -notmatch "KAIOZEN_HSR_44_EXTERNAL_TRIGGER_FP16") {
-            throw "HOTFIX I binary marker missing."
+          if ($variant -eq "full-upstream" -and $ascii -notmatch "KAIOZEN_HSR_44_RGBA8_PQ_FINALPASS") {
+            throw "HOTFIX J binary marker missing."
           }
 
           $license = Get-ChildItem renodx -File | Where-Object { $_.Name -match '^LICENSE' } | Select-Object -First 1
