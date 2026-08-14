@@ -41,6 +41,15 @@ jobs:
           }
           "RESHADE_PIN=PASS"
 
+      - name: Apply ReShade DX11 D3DMetal empty-SRV HOTFIX N
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_reshade_empty_srv.py `
+            reshade\source\runtime.cpp
+          if ($LASTEXITCODE -ne 0) {
+            throw "HOTFIX N ReShade empty-SRV patch failed."
+          }
+
       - name: Configure MSVC x64
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -84,6 +93,7 @@ jobs:
             "COMMIT=$env:RESHADE_SHA",
             "CONFIGURATION=Release|64-bit",
             "FULL_ADDON_EXPORT=ReShadeRegisterAddon",
+            "PATCH=KAIOZEN_HSR_RESHADE_EMPTY_SRV_RGBA8_N",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
           Get-Content payload-reshade\manifest.txt
