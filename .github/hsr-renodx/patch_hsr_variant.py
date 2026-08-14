@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
 import argparse
 from pathlib import Path
 
@@ -7,11 +8,11 @@ from pathlib import Path
 def find_function_span(text: str, signature: str) -> tuple[int, int]:
     start = text.find(signature)
     if start < 0:
-        raise SystemExit(f"Could not find function signature: {signature}")
+        raise SystemExit(f"FAIL: function not found: {signature}")
 
     brace = text.find("{", start)
     if brace < 0:
-        raise SystemExit("Could not find opening brace for DllMain")
+        raise SystemExit("FAIL: DllMain opening brace not found")
 
     depth = 0
     i = brace
@@ -88,45 +89,27 @@ def find_function_span(text: str, signature: str) -> tuple[int, int]:
 
         i += 1
 
-    raise SystemExit("Could not find closing brace for DllMain")
+    raise SystemExit("FAIL: DllMain closing brace not found")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--file", required=True)
-    ap.add_argument(
-        "--variant",
-        required=True,
-        choices=[
-            "register-only",
-            "shader-only",
-            "swapchain-no-resource",
-        ],
-    )
-    args = ap.parse_args()
-
-    path = Path(args.file)
-    text = path.read_text(encoding="utf-8")
-
-    start, end = find_function_span(text, "BOOL APIENTRY DllMain")
-
-    if args.variant == "register-only":
-        replacement = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_REGISTER_ONLY";
+REGISTER_ONLY = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_REGISTER_ONLY";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
       break;
+
     case DLL_PROCESS_DETACH:
       reshade::unregister_addon(h_module);
       break;
   }
+
   return TRUE;
 }'''
 
-    elif args.variant == "shader-only":
-        replacement = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_SHADER_ONLY";
+
+SHADER_ONLY = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_SHADER_ONLY";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
@@ -134,6 +117,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
       if (!reshade::register_addon(h_module)) return FALSE;
       renodx::mods::shader::force_pipeline_cloning = true;
       break;
+
     case DLL_PROCESS_DETACH:
       reshade::unregister_addon(h_module);
       break;
@@ -141,28 +125,48 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+
   return TRUE;
 }'''
 
-    else:
-        replacement = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_SWAPCHAIN_NO_RESOURCE";
+
+R10_HDR10 = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_R10_HDR10";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
 
+      // Keep the shader replacement path already proven stable on HSR 4.4.
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // HOTFIX A:
-      // Keep the RenoDX swapchain/proxy path,
-      // but remove internal resource cloning/upgrades.
-      renodx::mods::swapchain::use_resource_cloning = false;
+      // ==========================================================
+      // KAIOZEN HSR MAC R10/HDR10 DIAGNOSTIC
+      //
+      // Inspired by the working Kaiozen ZZZ D3DMetal HDR path.
+      //
+      // Primary output:
+      //   R10G10B10A2_UNORM
+      //   HDR10 / ST2084
+      //
+      // Explicitly avoid the failing HSR upstream FP16/scRGB path.
+      // ==========================================================
 
-      renodx::mods::swapchain::swap_chain_proxy_vertex_shader =
-          __swap_chain_proxy_vertex_shader;
-      renodx::mods::swapchain::swap_chain_proxy_pixel_shader =
-          __swap_chain_proxy_pixel_shader;
+      renodx::mods::swapchain::SetUseHDR10(true);
+
+      // Remove unrelated variables from this experiment.
+      renodx::mods::swapchain::use_resource_cloning = false;
+      renodx::mods::swapchain::prevent_full_screen = false;
+      renodx::mods::swapchain::force_borderless = false;
+      renodx::mods::swapchain::force_screen_tearing = false;
+
+      // Keep color-space switching ON because this is specifically
+      // testing the HDR10/ST2084 presentation path.
+      renodx::mods::swapchain::set_color_space = true;
+
+      // No proxy shaders.
+      // No HSR internal FP16 upgrade targets.
+      // No extra resource upgrades.
 
       break;
 
@@ -177,6 +181,33 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
 
   return TRUE;
 }'''
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--file", required=True)
+    ap.add_argument(
+        "--variant",
+        required=True,
+        choices=[
+            "register-only",
+            "shader-only",
+            "r10-hdr10",
+        ],
+    )
+    args = ap.parse_args()
+
+    path = Path(args.file)
+    text = path.read_text(encoding="utf-8")
+
+    start, end = find_function_span(text, "BOOL APIENTRY DllMain")
+
+    if args.variant == "register-only":
+        replacement = REGISTER_ONLY
+    elif args.variant == "shader-only":
+        replacement = SHADER_ONLY
+    else:
+        replacement = R10_HDR10
 
     text = text[:start] + replacement + text[end:]
     path.write_text(text, encoding="utf-8")
