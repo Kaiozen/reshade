@@ -146,7 +146,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
 
 LATE_DIRECT_FP16 = r'''
 extern "C" __declspec(dllexport) const char*
-KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_LATE_DIRECT_FP16";
+KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_LATE_DIRECT_FP16_RESOURCE_SAFE";
 
 static bool kaiozen_fp16_attempted = false;
 static ULONGLONG kaiozen_first_present_ms = 0;
@@ -237,6 +237,16 @@ BOOL APIENTRY DllMain(
       reshade::unregister_addon(h_module);
       break;
   }
+
+  // HOTFIX G:
+  // ResizeBuffer() internally calls
+  // utils::resource::RegisterSwapchainChange().
+  // That API requires ResourceUtil's shared tracking state.
+  //
+  // IMPORTANT:
+  // This is ONLY resource bookkeeping.
+  // We still do NOT enable mods::swapchain.
+  renodx::utils::resource::Use(fdw_reason);
 
   renodx::utils::settings::Use(
       fdw_reason,
