@@ -146,16 +146,86 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
 '''
 
 
-MANUAL_NATIVE_FP16 = r'''
+EXTERNAL_TRIGGER_FP16 = r'''
 extern "C" __declspec(dllexport) const char*
-KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_MANUAL_NATIVE_FP16";
+KAIOZEN_HSR_LAB_VARIANT =
+    "KAIOZEN_HSR_44_EXTERNAL_TRIGGER_FP16";
 
-static bool kaiozen_fp16_attempted = false;
-static bool kaiozen_ready_logged = false;
-static bool kaiozen_f10_was_down = false;
+static volatile LONG kaiozen_arm_requested = 0;
+static volatile LONG kaiozen_fp16_attempted = 0;
+static volatile LONG kaiozen_thread_started = 0;
 
 
-static void KaiozenManualFP16Present(
+static DWORD WINAPI KaiozenHDRTriggerThread(LPVOID) {
+  reshade::log::message(
+      reshade::log::level::info,
+      "[Kaiozen] EXTERNAL_TRIGGER_THREAD_READY");
+
+  constexpr const wchar_t* trigger_path =
+      L"C:\\KAIOZEN_HSR_HDR_ARM.flag";
+
+  while (true) {
+    const DWORD attrs =
+        GetFileAttributesW(trigger_path);
+
+    if (attrs != INVALID_FILE_ATTRIBUTES
+        && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+
+      DeleteFileW(trigger_path);
+
+      InterlockedExchange(
+          &kaiozen_arm_requested,
+          1);
+
+      reshade::log::message(
+          reshade::log::level::info,
+          "[Kaiozen] EXTERNAL_HDR_ARM_RECEIVED");
+
+      return 0;
+    }
+
+    Sleep(100);
+  }
+}
+
+
+static void KaiozenStartTriggerThread(
+    reshade::api::device* device) {
+
+  (void)device;
+
+  if (InterlockedCompareExchange(
+          &kaiozen_thread_started,
+          1,
+          0) != 0) {
+    return;
+  }
+
+  HANDLE thread = CreateThread(
+      nullptr,
+      0,
+      KaiozenHDRTriggerThread,
+      nullptr,
+      0,
+      nullptr);
+
+  if (thread == nullptr) {
+    InterlockedExchange(
+        &kaiozen_thread_started,
+        0);
+
+    reshade::log::message(
+        reshade::log::level::error,
+        "[Kaiozen] EXTERNAL_TRIGGER_THREAD_FAILED");
+
+    return;
+  }
+
+  CloseHandle(thread);
+}
+
+
+static void KaiozenExternalHDRPresent(
     reshade::api::command_queue* queue,
     reshade::api::swapchain* swapchain,
     const reshade::api::rect* source_rect,
@@ -169,35 +239,30 @@ static void KaiozenManualFP16Present(
   (void)dirty_rect_count;
   (void)dirty_rects;
 
-  if (!kaiozen_ready_logged) {
-    kaiozen_ready_logged = true;
-
-    reshade::log::message(
-        reshade::log::level::info,
-        "[Kaiozen] MANUAL_FP16_READY_PRESS_F10_IN_WORLD");
-  }
-
-  if (kaiozen_fp16_attempted)
-    return;
-
-  const bool f10_down =
-      (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-
-  // Edge-trigger the key.
-  // Holding F10 cannot fire more than once.
-  if (!f10_down) {
-    kaiozen_f10_was_down = false;
+  // During normal play this is the ONLY operation performed:
+  // one atomic read and return.
+  //
+  // NO GetAsyncKeyState.
+  // NO filesystem access.
+  // NO timer.
+  // NO swapchain modification.
+  if (InterlockedCompareExchange(
+          &kaiozen_arm_requested,
+          0,
+          0) == 0) {
     return;
   }
 
-  if (kaiozen_f10_was_down)
+  if (InterlockedCompareExchange(
+          &kaiozen_fp16_attempted,
+          1,
+          0) != 0) {
     return;
-
-  kaiozen_f10_was_down = true;
+  }
 
   reshade::log::message(
       reshade::log::level::info,
-      "[Kaiozen] MANUAL_NATIVE_FP16_BEGIN");
+      "[Kaiozen] EXTERNAL_NATIVE_FP16_BEGIN");
 
   auto* native_swapchain =
       reinterpret_cast<IDXGISwapChain*>(
@@ -206,7 +271,7 @@ static void KaiozenManualFP16Present(
   if (native_swapchain == nullptr) {
     reshade::log::message(
         reshade::log::level::error,
-        "[Kaiozen] MANUAL_NATIVE_FP16_NO_NATIVE_SWAPCHAIN");
+        "[Kaiozen] EXTERNAL_NATIVE_FP16_NO_SWAPCHAIN");
     return;
   }
 
@@ -219,7 +284,7 @@ static void KaiozenManualFP16Present(
   if (FAILED(hr) || swapchain4 == nullptr) {
     reshade::log::message(
         reshade::log::level::error,
-        "[Kaiozen] MANUAL_NATIVE_FP16_QUERY_FAILED");
+        "[Kaiozen] EXTERNAL_NATIVE_FP16_QUERY_FAILED");
     return;
   }
 
@@ -230,49 +295,32 @@ static void KaiozenManualFP16Present(
   if (FAILED(hr)) {
     reshade::log::message(
         reshade::log::level::error,
-        "[Kaiozen] MANUAL_NATIVE_FP16_GETDESC_FAILED");
+        "[Kaiozen] EXTERNAL_NATIVE_FP16_GETDESC_FAILED");
 
     swapchain4->Release();
     return;
   }
 
-  // We only want HSR's normal Unity RGBA8 swapchain.
-  // Do not touch any unexpected secondary swapchain.
-  if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM) {
+  if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM
+      || desc.Width < 800
+      || desc.Height < 600) {
+
     reshade::log::message(
         reshade::log::level::warning,
-        "[Kaiozen] MANUAL_NATIVE_FP16_UNEXPECTED_FORMAT");
+        "[Kaiozen] EXTERNAL_NATIVE_FP16_WRONG_SWAPCHAIN");
+
+    InterlockedExchange(
+        &kaiozen_fp16_attempted,
+        0);
 
     swapchain4->Release();
     return;
   }
-
-  if (desc.Width < 800 || desc.Height < 600) {
-    reshade::log::message(
-        reshade::log::level::warning,
-        "[Kaiozen] MANUAL_NATIVE_FP16_SECONDARY_SWAPCHAIN_IGNORED");
-
-    swapchain4->Release();
-    return;
-  }
-
-  // Set this before ResizeBuffers because ResizeBuffers can
-  // synchronously generate additional ReShade callbacks.
-  kaiozen_fp16_attempted = true;
 
   reshade::log::message(
       reshade::log::level::info,
-      "[Kaiozen] MANUAL_NATIVE_FP16_RESIZE_BEGIN");
+      "[Kaiozen] EXTERNAL_NATIVE_FP16_RESIZE_BEGIN");
 
-  // IMPORTANT:
-  //
-  // Direct native DXGI only.
-  //
-  // NO ResourceUtil.
-  // NO mods::swapchain.
-  // NO RenoDX ResizeBuffer helper.
-  //
-  // BufferCount=0 preserves the existing buffer count.
   hr = swapchain4->ResizeBuffers(
       0,
       desc.Width,
@@ -283,7 +331,7 @@ static void KaiozenManualFP16Present(
   if (FAILED(hr)) {
     reshade::log::message(
         reshade::log::level::error,
-        "[Kaiozen] MANUAL_NATIVE_FP16_RESIZE_FAILED");
+        "[Kaiozen] EXTERNAL_NATIVE_FP16_RESIZE_FAILED");
 
     swapchain4->Release();
     return;
@@ -291,16 +339,15 @@ static void KaiozenManualFP16Present(
 
   reshade::log::message(
       reshade::log::level::info,
-      "[Kaiozen] MANUAL_NATIVE_FP16_RESIZE_OK");
+      "[Kaiozen] EXTERNAL_NATIVE_FP16_RESIZE_OK");
 
-  // scRGB / extended sRGB linear.
   hr = swapchain4->SetColorSpace1(
       DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
 
   if (FAILED(hr)) {
     reshade::log::message(
         reshade::log::level::error,
-        "[Kaiozen] MANUAL_NATIVE_FP16_COLORSPACE_FAILED");
+        "[Kaiozen] EXTERNAL_NATIVE_FP16_COLORSPACE_FAILED");
 
     swapchain4->Release();
     return;
@@ -308,13 +355,13 @@ static void KaiozenManualFP16Present(
 
   reshade::log::message(
       reshade::log::level::info,
-      "[Kaiozen] MANUAL_NATIVE_FP16_COLORSPACE_OK");
+      "[Kaiozen] EXTERNAL_NATIVE_FP16_COLORSPACE_OK");
 
   swapchain4->Release();
 
   reshade::log::message(
       reshade::log::level::info,
-      "[Kaiozen] MANUAL_NATIVE_FP16_RETURNED");
+      "[Kaiozen] EXTERNAL_NATIVE_FP16_RETURNED");
 }
 
 
@@ -328,21 +375,29 @@ BOOL APIENTRY DllMain(
       if (!reshade::register_addon(h_module))
         return FALSE;
 
-      // Exact proven-good shader-only renderer.
+      // Proven-good HSR renderer.
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // Manual observation/activation only.
-      // Nothing modifies Unity's swapchain during boot.
+      // Start the trigger waiter after D3D device initialization.
+      reshade::register_event<
+          reshade::addon_event::init_device>(
+              KaiozenStartTriggerThread);
+
+      // Present contains only an atomic check until explicitly armed.
       reshade::register_event<
           reshade::addon_event::present>(
-              KaiozenManualFP16Present);
+              KaiozenExternalHDRPresent);
 
       break;
 
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<
           reshade::addon_event::present>(
-              KaiozenManualFP16Present);
+              KaiozenExternalHDRPresent);
+
+      reshade::unregister_event<
+          reshade::addon_event::init_device>(
+              KaiozenStartTriggerThread);
 
       reshade::unregister_addon(h_module);
       break;
@@ -358,12 +413,13 @@ BOOL APIENTRY DllMain(
       custom_shaders,
       &shader_injection);
 
-  // INTENTIONALLY ABSENT:
+  // INTENTIONALLY NEVER USED:
   //
   // renodx::utils::resource::Use(...)
   // renodx::mods::swapchain::Use(...)
+  // GetAsyncKeyState(...)
   //
-  // Startup must remain equivalent to shader-only.
+  // Unity startup/presentation remains shader-only until armed.
 
   return TRUE;
 }
@@ -383,7 +439,7 @@ def main() -> None:
         choices=[
             "register-only",
             "shader-only",
-            "late-direct-fp16",
+            "external-trigger-fp16",
         ])
 
     args = parser.parse_args()
@@ -400,7 +456,7 @@ def main() -> None:
     elif args.variant == "shader-only":
         replacement = SHADER_ONLY
     else:
-        replacement = MANUAL_NATIVE_FP16
+        replacement = EXTERNAL_TRIGGER_FP16
 
     text = text[:start] + replacement + text[end:]
 
