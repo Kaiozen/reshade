@@ -1,0 +1,102 @@
+name: HSR DX11 D3DMetal HDR Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build standalone DX11 HDR probes
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout probe source
+        uses: actions/checkout@v4
+
+      - name: Configure MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Build scRGB FP16 probe
+        shell: pwsh
+        run: |
+          cl /nologo /EHsc /std:c++17 /O2 /W4 `
+            /DUNICODE /D_UNICODE /DKAIOZEN_HDR10=0 `
+            .github\hsr-renodx\hdr_probe.cpp `
+            /Fe:Kaiozen-DX11-scRGB-Probe.exe `
+            /link d3d11.lib dxgi.lib user32.lib
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "scRGB probe compilation failed."
+          }
+
+      - name: Build HDR10 R10 probe
+        shell: pwsh
+        run: |
+          cl /nologo /EHsc /std:c++17 /O2 /W4 `
+            /DUNICODE /D_UNICODE /DKAIOZEN_HDR10=1 `
+            .github\hsr-renodx\hdr_probe.cpp `
+            /Fe:Kaiozen-DX11-HDR10-Probe.exe `
+            /link d3d11.lib dxgi.lib user32.lib
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "HDR10 probe compilation failed."
+          }
+
+      - name: Verify binaries
+        shell: pwsh
+        run: |
+          $files = @(
+            "Kaiozen-DX11-scRGB-Probe.exe",
+            "Kaiozen-DX11-HDR10-Probe.exe"
+          )
+
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) {
+              throw "Missing probe: $file"
+            }
+
+            $hash = (
+              Get-FileHash $file -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+            "$file SHA256=$hash"
+          }
+
+      - name: Package probes
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory `
+            -Force payload | Out-Null
+
+          Copy-Item `
+            Kaiozen-DX11-scRGB-Probe.exe `
+            payload\
+
+          Copy-Item `
+            Kaiozen-DX11-HDR10-Probe.exe `
+            payload\
+
+          @(
+            "KAIOZEN_DX11_HDR_OUTPUT_PROBE=1",
+            "HSR_INJECTION=NO",
+            "RENODX_REQUIRED=NO",
+            "D3DMETAL_RUNTIME_MODIFICATION=NO",
+            "SCRGB_FORMAT=DXGI_FORMAT_R16G16B16A16_FLOAT",
+            "SCRGB_COLORSPACE=DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709",
+            "HDR10_FORMAT=DXGI_FORMAT_R10G10B10A2_UNORM",
+            "HDR10_COLORSPACE=DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020"
+          ) | Set-Content `
+            payload\manifest.txt `
+            -Encoding ascii
+
+      - name: Upload probes
+        uses: actions/upload-artifact@v4
+        with:
+          name: hsr-dx11-hdr-probes
+          path: payload
+          if-no-files-found: error
+          retention-days: 14
