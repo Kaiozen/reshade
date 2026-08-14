@@ -53,12 +53,26 @@ jobs:
             throw "HDR10 probe compilation failed."
           }
 
+      - name: Build RGBA8 HDR10 PQ probe
+        shell: pwsh
+        run: |
+          cl /nologo /EHsc /std:c++17 /O2 /W4 `
+            /DUNICODE /D_UNICODE /DKAIOZEN_HDR10=1 `
+            .github\hsr-renodx\hdr_probe_rgba8_pq.cpp `
+            /Fe:Kaiozen-DX11-RGBA8-PQ-Probe.exe `
+            /link d3d11.lib dxgi.lib user32.lib
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "RGBA8 PQ probe compilation failed."
+          }
+
       - name: Verify binaries
         shell: pwsh
         run: |
           $files = @(
             "Kaiozen-DX11-scRGB-Probe.exe",
-            "Kaiozen-DX11-HDR10-Probe.exe"
+            "Kaiozen-DX11-HDR10-Probe.exe",
+            "Kaiozen-DX11-RGBA8-PQ-Probe.exe"
           )
 
           foreach ($file in $files) {
@@ -87,6 +101,10 @@ jobs:
             Kaiozen-DX11-HDR10-Probe.exe `
             payload\
 
+          Copy-Item `
+            Kaiozen-DX11-RGBA8-PQ-Probe.exe `
+            payload\
+
           @(
             "KAIOZEN_DX11_HDR_OUTPUT_PROBE=1",
             "HSR_INJECTION=NO",
@@ -95,7 +113,9 @@ jobs:
             "SCRGB_FORMAT=DXGI_FORMAT_R16G16B16A16_FLOAT",
             "SCRGB_COLORSPACE=DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709",
             "HDR10_FORMAT=DXGI_FORMAT_R10G10B10A2_UNORM",
-            "HDR10_COLORSPACE=DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020"
+            "HDR10_COLORSPACE=DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020",
+            "RGBA8_PQ_FORMAT=DXGI_FORMAT_R8G8B8A8_UNORM",
+            "RGBA8_PQ_COLORSPACE=DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020"
           ) | Set-Content `
             payload\manifest.txt `
             -Encoding ascii
