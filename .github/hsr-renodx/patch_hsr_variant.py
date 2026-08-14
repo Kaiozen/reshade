@@ -12,11 +12,10 @@ def find_function_span(text: str, signature: str) -> tuple[int, int]:
 
     brace = text.find("{", start)
     if brace < 0:
-        raise SystemExit("FAIL: DllMain opening brace not found")
+        raise SystemExit("FAIL: opening brace not found")
 
     depth = 0
     i = brace
-
     in_string = False
     in_char = False
     in_line_comment = False
@@ -90,10 +89,12 @@ def find_function_span(text: str, signature: str) -> tuple[int, int]:
 
         i += 1
 
-    raise SystemExit("FAIL: DllMain closing brace not found")
+    raise SystemExit("FAIL: closing brace not found")
 
 
-REGISTER_ONLY = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_REGISTER_ONLY";
+REGISTER_ONLY = r'''
+extern "C" __declspec(dllexport) const char*
+KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_REGISTER_ONLY";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
@@ -107,10 +108,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   }
 
   return TRUE;
-}'''
+}
+'''
 
 
-SHADER_ONLY = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_SHADER_ONLY";
+SHADER_ONLY = r'''
+extern "C" __declspec(dllexport) const char*
+KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_SHADER_ONLY";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
   switch (fdw_reason) {
@@ -125,105 +129,134 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
       break;
   }
 
-  renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  renodx::utils::settings::Use(
+      fdw_reason,
+      &settings,
+      &OnPresetOff);
+
   renodx::mods::shader::Use(
       fdw_reason,
       custom_shaders,
       &shader_injection);
 
   return TRUE;
-}'''
+}
+'''
 
 
-PROXY_SCRGB = r'''extern "C" __declspec(dllexport) const char* KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_PROXY_SCRGB";
+LATE_DIRECT_FP16 = r'''
+extern "C" __declspec(dllexport) const char*
+KAIOZEN_HSR_LAB_VARIANT = "KAIOZEN_HSR_44_LATE_DIRECT_FP16";
 
-BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID) {
+static bool kaiozen_fp16_attempted = false;
+static ULONGLONG kaiozen_first_present_ms = 0;
+
+static void KaiozenLateFP16Present(
+    reshade::api::command_queue* queue,
+    reshade::api::swapchain* swapchain,
+    const reshade::api::rect* source_rect,
+    const reshade::api::rect* dest_rect,
+    uint32_t dirty_rect_count,
+    const reshade::api::rect* dirty_rects) {
+
+  (void)queue;
+  (void)source_rect;
+  (void)dest_rect;
+  (void)dirty_rect_count;
+  (void)dirty_rects;
+
+  if (kaiozen_fp16_attempted)
+    return;
+
+  const ULONGLONG now = GetTickCount64();
+
+  if (kaiozen_first_present_ms == 0) {
+    kaiozen_first_present_ms = now;
+
+    reshade::log::message(
+        reshade::log::level::info,
+        "[Kaiozen] LATE_FP16_TIMER_STARTED");
+
+    return;
+  }
+
+  // Give Unity plenty of time to complete its startup ResizeBuffers
+  // sequence before touching the backbuffer.
+  if ((now - kaiozen_first_present_ms) < 10000)
+    return;
+
+  // Set BEFORE ResizeBuffer because ResizeBuffers itself can generate
+  // additional ReShade events.
+  kaiozen_fp16_attempted = true;
+
+  reshade::log::message(
+      reshade::log::level::info,
+      "[Kaiozen] LATE_DIRECT_FP16_BEGIN");
+
+  // IMPORTANT:
+  //
+  // Do not call renodx::mods::swapchain::Use().
+  //
+  // Keep Unity's entire startup swapchain lifecycle untouched and
+  // perform one direct upgrade only after stable presentation.
+  renodx::utils::swapchain::ResizeBuffer(
+      swapchain,
+      reshade::api::format::r16g16b16a16_float,
+      reshade::api::color_space::extended_srgb_linear);
+
+  reshade::log::message(
+      reshade::log::level::info,
+      "[Kaiozen] LATE_DIRECT_FP16_RETURNED");
+}
+
+
+BOOL APIENTRY DllMain(
+    HMODULE h_module,
+    DWORD fdw_reason,
+    LPVOID) {
+
   switch (fdw_reason) {
     case DLL_PROCESS_ATTACH:
-      if (!reshade::register_addon(h_module)) return FALSE;
+      if (!reshade::register_addon(h_module))
+        return FALSE;
 
-      // ==========================================================
-      // KAIOZEN HSR MAC DISPLAY-PROXY HDR
-      //
-      // Keep HSR / Unity primary presentation untouched.
-      //
-      // PRIMARY:
-      //   R8G8B8A8_UNORM
-      //   normal Unity / D3DMetal path
-      //
-      // HDR OUTPUT:
-      //   separate RenoDX display proxy
-      //   R16G16B16A16_FLOAT
-      //   extended_sRGB_linear / scRGB
-      // ==========================================================
-
-      // Already proven stable in shader-only.
+      // Proven-good HSR 4.4 path.
       renodx::mods::shader::force_pipeline_cloning = true;
 
-      // HSR's existing final proxy shader outputs linear scRGB.
-      // Explicitly select FP16/scRGB, NOT HDR10/R10.
-      renodx::mods::swapchain::SetUseHDR10(false);
-
-      // This is the critical architectural change.
-      //
-      // Do not make HSR's own Unity swapchain the HDR swapchain.
-      // Make RenoDX create/use a separate presentation device.
-      renodx::mods::swapchain::use_device_proxy = true;
-
-      // The proxy owns HDR color space.
-      // Do not change color space on HSR's own swapchain.
-      renodx::mods::swapchain::set_color_space = false;
-
-      // Proxy/shared-resource transport.
-      renodx::mods::swapchain::use_resource_cloning = true;
-
-      // HSR's own upstream final-output proxy shaders.
-      renodx::mods::swapchain::swap_chain_proxy_vertex_shader =
-          __swap_chain_proxy_vertex_shader;
-
-      renodx::mods::swapchain::swap_chain_proxy_pixel_shader =
-          __swap_chain_proxy_pixel_shader;
-
-      // HSR DX11 injection uses b13.
-      renodx::mods::swapchain::expected_constant_buffer_index = 13;
-      renodx::mods::swapchain::expected_constant_buffer_space = 0;
-
-      // Start in maximum-synchronization mode.
-      // We optimize this only AFTER it renders correctly.
-      renodx::mods::swapchain::device_proxy_wait_idle_source = true;
-      renodx::mods::swapchain::device_proxy_wait_idle_destination = true;
-
-      // Absolutely no direct Unity swapchain resize path.
-      renodx::mods::swapchain::use_resize_buffer = false;
-      renodx::mods::swapchain::use_resize_buffer_on_present = false;
-      renodx::mods::swapchain::use_resize_buffer_on_demand = false;
-      renodx::mods::swapchain::use_resize_buffer_on_set_full_screen = false;
-
-      // Don't alter Unity's window/presentation policy.
-      renodx::mods::swapchain::prevent_full_screen = false;
-      renodx::mods::swapchain::force_borderless = false;
-      renodx::mods::swapchain::force_screen_tearing = false;
+      // Lightweight observation only.
+      // NO RenoDX swapchain module.
+      reshade::register_event<reshade::addon_event::present>(
+          KaiozenLateFP16Present);
 
       break;
 
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::present>(
+          KaiozenLateFP16Present);
+
       reshade::unregister_addon(h_module);
       break;
   }
 
-  renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
-
-  renodx::mods::swapchain::Use(
+  renodx::utils::settings::Use(
       fdw_reason,
-      &shader_injection);
+      &settings,
+      &OnPresetOff);
 
   renodx::mods::shader::Use(
       fdw_reason,
       custom_shaders,
       &shader_injection);
 
+  // ABSOLUTELY NO:
+  //
+  // renodx::mods::swapchain::Use(...)
+  //
+  // That module is the proven HSR+D3DMetal startup failure boundary.
+
   return TRUE;
-}'''
+}
+'''
 
 
 def main() -> None:
@@ -237,7 +270,7 @@ def main() -> None:
         choices=[
             "register-only",
             "shader-only",
-            "proxy-scrgb",
+            "late-direct-fp16",
         ],
     )
 
@@ -256,14 +289,11 @@ def main() -> None:
     elif args.variant == "shader-only":
         replacement = SHADER_ONLY
     else:
-        replacement = PROXY_SCRGB
+        replacement = LATE_DIRECT_FP16
 
     text = text[:start] + replacement + text[end:]
 
-    path.write_text(
-        text,
-        encoding="utf-8"
-    )
+    path.write_text(text, encoding="utf-8")
 
     print(f"PATCHED_VARIANT={args.variant}")
     print(f"FILE={path}")
