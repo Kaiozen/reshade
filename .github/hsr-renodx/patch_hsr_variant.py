@@ -677,20 +677,13 @@ float3 FinalizeOutputPQ8(float3 color) {
         "uberpost3_0x1AC9F8BC.ps_4_0.hlsl",
     ]
 
-    old_tail = (
-        "  o0.rgb = renodx::color::srgb::EncodeSafe(r0.rgb);\\n"
-        "  o0.xyz = PostToneMapScale(o0.xyz);\\n"
-        "  return;"
-    )
+    anchor = "  o0.xyz = PostToneMapScale(o0.xyz);"
 
-    new_tail = (
-        "  o0.rgb = renodx::color::srgb::EncodeSafe(r0.rgb);\\n"
-        "  o0.xyz = PostToneMapScale(o0.xyz);\\n"
-        "\\n"
-        "  // HOTFIX J: upstream RenoDX final output -> BT.2020 PQ.\\n"
-        "  o0.rgb = saturate(FinalizeOutputPQ8(o0.rgb));\\n"
-        "\\n"
-        "  return;"
+    replacement = (
+        anchor
+        + "\n\n"
+        + "  // HOTFIX J: upstream RenoDX final output -> BT.2020 PQ.\n"
+        + "  o0.rgb = saturate(FinalizeOutputPQ8(o0.rgb));"
     )
 
     for name in shader_files:
@@ -701,16 +694,16 @@ float3 FinalizeOutputPQ8(float3 color) {
             print(f"PQ_SHADER_ALREADY_PATCHED={name}")
             continue
 
-        count = text.count(old_tail)
+        count = text.count(anchor)
 
         if count != 1:
             raise SystemExit(
-                f"FAIL: {name}: final output anchor count={count}"
+                f"FAIL: {name}: PostToneMapScale anchor count={count}"
             )
 
         text = text.replace(
-            old_tail,
-            new_tail,
+            anchor,
+            replacement,
             1
         )
 
@@ -720,7 +713,6 @@ float3 FinalizeOutputPQ8(float3 color) {
         )
 
         print(f"PQ_SHADER_PATCHED={name}")
-
 
 def main() -> None:
     parser = argparse.ArgumentParser()
