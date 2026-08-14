@@ -1,6 +1,13 @@
 name: HSR DX11 D3DMetal HDR Probe
 
 on:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - '.github/hsr-renodx/hdr_probe.cpp'
+      - '.github/workflows/hsr-dx11-hdr-probe.yml'
+
   workflow_dispatch:
 
 permissions:
