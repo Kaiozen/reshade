@@ -1,0 +1,166 @@
+name: HSR RenoDX 4.4 HOTFIX M FinalFX
+
+on:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - ".github/workflows/hsr-renodx-4.4-hotfix-m.yml"
+      - ".github/hsr-renodx/patch_hsr_finalfx_m.py"
+      - ".github/hsr-renodx/KaiozenHSRFinalHDR.fx"
+      - ".github/hsr-renodx/KaiozenHSRFinalHDR.ini"
+
+permissions:
+  contents: read
+
+env:
+  RESHADE_SHA: 18deaa52de0c425a78b329e9cb3c497281cd00ec
+  RENODX_SHA: ee9ddee35e125e95e5fd242c1431b2a253cc9068
+
+jobs:
+  build:
+    name: HOTFIX M final-frame HDR10
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout control files
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned RenoDX
+        uses: actions/checkout@v4
+        with:
+          repository: clshortfuse/renodx
+          ref: ${{ env.RENODX_SHA }}
+          path: renodx
+          submodules: recursive
+
+      - name: Checkout pinned ReShade FX compiler
+        uses: actions/checkout@v4
+        with:
+          repository: crosire/reshade
+          ref: ${{ env.RESHADE_SHA }}
+          path: reshade-fxc
+          submodules: recursive
+
+      - name: Verify pins
+        shell: pwsh
+        run: |
+          $reno = (git -C renodx rev-parse HEAD).Trim().ToLowerInvariant()
+          $resh = (git -C reshade-fxc rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($reno -ne $env:RENODX_SHA.ToLowerInvariant()) { throw "RenoDX pin mismatch: $reno" }
+          if ($resh -ne $env:RESHADE_SHA.ToLowerInvariant()) { throw "ReShade pin mismatch: $resh" }
+          "SOURCE_PINS=PASS"
+
+      - name: Patch HSR to lifecycle-only FinalFX transport
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_hsr_finalfx_m.py `
+            renodx\src\games\honkai-starrail\addon.cpp
+          if ($LASTEXITCODE -ne 0) { throw "HOTFIX M patch failed." }
+
+          $source = Get-Content renodx\src\games\honkai-starrail\addon.cpp -Raw
+          if ($source -notmatch "KAIOZEN_HSR_44_FINALFX_HDR_M") { throw "M marker missing." }
+          if ($source -match "addon_event::present") { throw "Forbidden present callback found." }
+          if ($source -match "mods::swapchain::Use") { throw "Forbidden mods::swapchain found." }
+          if ($source -match "utils::resource::Use") { throw "Forbidden ResourceUtil found." }
+          "M_CPP_PREFLIGHT=PASS"
+
+      - name: Configure MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Build pinned ReShade FXC
+        shell: pwsh
+        run: |
+          msbuild reshade-fxc\ReShadeFXC.vcxproj `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m:1 `
+            /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "ReShade FXC build failed." }
+
+      - name: Validate final-frame HDR effect with ReShade FXC
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem reshade-fxc -Recurse -File -Filter fxc.exe |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (-not $fxc) { throw "fxc.exe not found." }
+
+          & $fxc.FullName `
+            --hlsl `
+            --shader-model 50 `
+            -Fo hotfix-m-generated.hlsl `
+            .github\hsr-renodx\KaiozenHSRFinalHDR.fx
+
+          if ($LASTEXITCODE -ne 0) { throw "Final HDR ReShade FX validation failed." }
+          if (-not (Test-Path hotfix-m-generated.hlsl)) { throw "FXC did not produce HLSL." }
+          "FINAL_EFFECT_FXC=PASS"
+
+      - name: Set up RenoDX shader tools
+        shell: pwsh
+        working-directory: renodx
+        run: |
+          .\scripts\setup-dev-env.ps1 -Update -Tools dxc,slang,glslang
+
+      - name: Configure RenoDX
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --preset vs-x64
+
+      - name: Build HSR RenoDX
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --build --preset vs-x64-release --target honkai-starrail --verbose
+
+      - name: Package HOTFIX M
+        shell: pwsh
+        run: |
+          $addon = Get-ChildItem renodx -Recurse -File -Filter renodx-honkai-starrail.addon64 |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (-not $addon) { throw "HSR addon was not produced." }
+
+          New-Item -ItemType Directory -Force payload | Out-Null
+          Copy-Item $addon.FullName payload\renodx-hsr-hotfix-m.addon64 -Force
+          Copy-Item .github\hsr-renodx\KaiozenHSRFinalHDR.fx payload\KaiozenHSRFinalHDR.fx -Force
+          Copy-Item .github\hsr-renodx\KaiozenHSRFinalHDR.ini payload\KaiozenHSRFinalHDR.ini -Force
+
+          $bytes = [IO.File]::ReadAllBytes("payload\renodx-hsr-hotfix-m.addon64")
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          if ($ascii -notmatch "KAIOZEN_HSR_44_FINALFX_HDR_M") { throw "M binary marker missing." }
+
+          $addonHash = (Get-FileHash payload\renodx-hsr-hotfix-m.addon64 -Algorithm SHA256).Hash.ToLowerInvariant()
+          $fxHash = (Get-FileHash payload\KaiozenHSRFinalHDR.fx -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          @(
+            "KAIOZEN_HSR_HOTFIX_M=1",
+            "ARCHITECTURE=FINAL_FRAME_RESHade_FX",
+            "EARLY_PQ=NO",
+            "FINAL_EFFECT_FXC=PASS",
+            "INVERSE_TONEMAP=ITU_R_BT2446A",
+            "SDR_REFERENCE_WHITE_NITS=203",
+            "HDR_PEAK_NITS=1000",
+            "OUTPUT_PRIMARIES=BT2020",
+            "OUTPUT_TRANSFER=ST2084_PQ",
+            "SWAPCHAIN_FORMAT=R8G8B8A8_UNORM_UNCHANGED",
+            "PRESENT_CALLBACK=NO",
+            "THREAD=NO",
+            "TIMER=NO",
+            "MODS_SWAPCHAIN=NO",
+            "RESOURCE_UTIL=NO",
+            "ADDON_SHA256=$addonHash",
+            "FX_SHA256=$fxHash"
+          ) | Set-Content payload\manifest.txt -Encoding ascii
+
+          Get-Content payload\manifest.txt
+
+      - name: Upload HOTFIX M
+        uses: actions/upload-artifact@v4
+        with:
+          name: hsr-renodx-hotfix-m-finalfx
+          path: payload
+          if-no-files-found: error
+          retention-days: 14
