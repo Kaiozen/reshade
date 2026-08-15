@@ -11,28 +11,26 @@ runtime = runtime_path.read_text(encoding="utf-8")
 
 include_anchor = '#include "reshade_api_object_impl.hpp"\n'
 if runtime.count(include_anchor) != 1:
-    raise SystemExit("FAIL: DXGI include anchor invalid")
+    raise SystemExit("FAIL: include anchor invalid")
 runtime = runtime.replace(include_anchor, include_anchor + '#include <dxgi1_6.h>\n', 1)
 
 state_anchor = "\t_back_buffer_color_space = _swapchain->get_color_space();\n"
 if runtime.count(state_anchor) != 1:
-    raise SystemExit("FAIL: runtime color-space anchor invalid")
-
+    raise SystemExit("FAIL: backbuffer state anchor invalid")
 state_insert = state_anchor + r'''
 
-	// Kaiozen HOTFIX Q: match the entire RGBA8 family instead of requiring a
-	// single typed enum. This avoids silently missing sRGB/typeless variants.
-	const bool kaiozen_hsr_core_hdr =
+	// HOTFIX R: only HSR-sized DX11 RGBA8-family swapchains.
+	const bool kaiozen_hsr_minimal_hdr =
 		_device->get_api() == api::device_api::d3d11 &&
 		api::format_to_typeless(back_buffer_desc.texture.format) == api::format::r8g8b8a8_typeless &&
-		_width >= 800 && _height >= 600;
+		_width >= 1000 &&
+		_height >= 700;
 
-	if (kaiozen_hsr_core_hdr)
+	if (kaiozen_hsr_minimal_hdr)
 	{
-		_back_buffer_color_space = api::color_space::hdr10_pq;
 		log::message(
 			log::level::info,
-			"[Kaiozen] Q_ROUTE_MATCH=YES raw_format=%u typed_format=%u size=%ux%u samples=%u",
+			"[Kaiozen] R_ROUTE_MATCH=YES raw_format=%u typed_format=%u size=%ux%u samples=%u",
 			static_cast<uint32_t>(back_buffer_desc.texture.format),
 			static_cast<uint32_t>(_back_buffer_format),
 			_width,
@@ -47,8 +45,7 @@ if runtime.count(resolve_anchor) != 1:
     raise SystemExit("FAIL: resolve condition anchor invalid")
 runtime = runtime.replace(
     resolve_anchor,
-    "\tif (kaiozen_hsr_core_hdr ||\n"
-    "\t\tback_buffer_desc.texture.samples > 1 ||\n",
+    "\tif (kaiozen_hsr_minimal_hdr ||\n\t\tback_buffer_desc.texture.samples > 1 ||\n",
     1,
 )
 
@@ -58,55 +55,76 @@ if runtime.count(srv_anchor) != 1:
 runtime = runtime.replace(
     srv_anchor,
     "\t\t\t\tapi::resource_view_desc(\n"
-    "\t\t\t\t\tkaiozen_hsr_core_hdr\n"
+    "\t\t\t\t\tkaiozen_hsr_minimal_hdr\n"
     "\t\t\t\t\t\t? api::format_to_default_typed(_back_buffer_format, 0)\n"
     "\t\t\t\t\t\t: _back_buffer_format),\n",
     1,
 )
 
-late_anchor = "\t// Reset frame count to zero so effects are loaded in 'update_effects'\n"
-if runtime.count(late_anchor) != 1:
-    raise SystemExit("FAIL: late HDR activation anchor invalid")
+empty_anchor = "\t// Create an empty texture, which is bound to shader resource view slots with an unknown semantic"
+if runtime.count(empty_anchor) != 1:
+    raise SystemExit("FAIL: minimal-init insertion anchor invalid")
 
-late_block = r'''
-	// HOTFIX Q invariant:
-	// NO confirmed final PQ copy path = NO HDR10 swapchain tag.
-	if (kaiozen_hsr_core_hdr)
+minimal_init = r'''
+	// HOTFIX R minimal HSR initialization. No ReShade effects or GUI required.
+	if (kaiozen_hsr_minimal_hdr)
 	{
 		if (_back_buffer_resolved == 0 ||
 			_back_buffer_resolved_srv == 0 ||
-			_copy_pipeline == 0)
+			_copy_pipeline == 0 ||
+			_copy_pipeline_layout == 0 ||
+			_copy_sampler_state == 0)
 		{
-			log::message(log::level::error, "[Kaiozen] Q_HDR_BLOCKED=COPY_PATH_NOT_READY");
+			log::message(log::level::error, "[Kaiozen] R_HDR_BLOCKED=COPY_RESOURCES_NOT_READY");
 			goto exit_failure;
 		}
 
-		auto *const native_swapchain =
-			reinterpret_cast<IDXGISwapChain *>(_swapchain->get_native());
+		for (uint32_t i = 0, count = _swapchain->get_back_buffer_count(); i < count; ++i)
+		{
+			const api::resource back_buffer_resource = _swapchain->get_back_buffer(i);
+
+			if (!_device->create_resource_view(
+					back_buffer_resource,
+					api::resource_usage::render_target,
+					api::resource_view_desc(
+						back_buffer_desc.texture.samples > 1 ? api::resource_view_type::texture_2d_multisample : api::resource_view_type::texture_2d,
+						api::format_to_default_typed(back_buffer_desc.texture.format, 0), 0, 1, 0, 1),
+					&_back_buffer_targets.emplace_back()) ||
+				!_device->create_resource_view(
+					back_buffer_resource,
+					api::resource_usage::render_target,
+					api::resource_view_desc(
+						back_buffer_desc.texture.samples > 1 ? api::resource_view_type::texture_2d_multisample : api::resource_view_type::texture_2d,
+						api::format_to_default_typed(back_buffer_desc.texture.format, 1), 0, 1, 0, 1),
+					&_back_buffer_targets.emplace_back()))
+			{
+				log::message(log::level::error, "[Kaiozen] R_HDR_BLOCKED=BACKBUFFER_VIEWS_FAILED");
+				goto exit_failure;
+			}
+		}
+
+		create_state_block(_device, &_app_state);
+
+		auto *const native_swapchain = reinterpret_cast<IDXGISwapChain *>(_swapchain->get_native());
 		IDXGISwapChain3 *swapchain3 = nullptr;
 
 		if (native_swapchain == nullptr ||
 			FAILED(native_swapchain->QueryInterface(IID_PPV_ARGS(&swapchain3))) ||
 			swapchain3 == nullptr)
 		{
-			log::message(log::level::error, "[Kaiozen] Q_HDR_BLOCKED=NO_DXGI_SWAPCHAIN3");
+			log::message(log::level::error, "[Kaiozen] R_HDR_BLOCKED=NO_DXGI_SWAPCHAIN3");
 			goto exit_failure;
 		}
 
-		constexpr DXGI_COLOR_SPACE_TYPE hdr10_color_space =
-			DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-
+		constexpr DXGI_COLOR_SPACE_TYPE hdr10_color_space = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 		UINT support = 0;
 		HRESULT hr = swapchain3->CheckColorSpaceSupport(hdr10_color_space, &support);
 
-		if (FAILED(hr) ||
-			(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) == 0)
+		if (FAILED(hr) || (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) == 0)
 		{
-			log::message(
-				log::level::error,
-				"[Kaiozen] Q_HDR_BLOCKED=HDR10_COLORSPACE_UNSUPPORTED hr=0x%08X support=0x%08X",
-				static_cast<unsigned int>(hr),
-				support);
+			log::message(log::level::error,
+				"[Kaiozen] R_HDR_BLOCKED=HDR10_UNSUPPORTED hr=0x%08X support=0x%08X",
+				static_cast<unsigned int>(hr), support);
 			swapchain3->Release();
 			goto exit_failure;
 		}
@@ -114,17 +132,17 @@ late_block = r'''
 		hr = swapchain3->SetColorSpace1(hdr10_color_space);
 		if (FAILED(hr))
 		{
-			log::message(
-				log::level::error,
-				"[Kaiozen] Q_HDR_BLOCKED=SETCOLORSPACE_FAILED hr=0x%08X",
+			log::message(log::level::error,
+				"[Kaiozen] R_HDR_BLOCKED=SETCOLORSPACE_FAILED hr=0x%08X",
 				static_cast<unsigned int>(hr));
 			swapchain3->Release();
 			goto exit_failure;
 		}
 
+		_back_buffer_color_space = api::color_space::hdr10_pq;
+
 		IDXGISwapChain4 *swapchain4 = nullptr;
-		if (SUCCEEDED(native_swapchain->QueryInterface(IID_PPV_ARGS(&swapchain4))) &&
-			swapchain4 != nullptr)
+		if (SUCCEEDED(native_swapchain->QueryInterface(IID_PPV_ARGS(&swapchain4))) && swapchain4 != nullptr)
 		{
 			DXGI_HDR_METADATA_HDR10 metadata = {};
 			metadata.RedPrimary[0] = 34000;
@@ -137,82 +155,99 @@ late_block = r'''
 			metadata.WhitePoint[1] = 16450;
 			metadata.MaxMasteringLuminance = 1000u * 10000u;
 			metadata.MinMasteringLuminance = 0;
-			metadata.MaxContentLightLevel = 203;
-			metadata.MaxFrameAverageLightLevel = 203;
+			metadata.MaxContentLightLevel = 1000;
+			metadata.MaxFrameAverageLightLevel = 400;
 
 			const HRESULT metadata_hr = swapchain4->SetHDRMetaData(
-				DXGI_HDR_METADATA_TYPE_HDR10,
-				sizeof(metadata),
-				&metadata);
-
+				DXGI_HDR_METADATA_TYPE_HDR10, sizeof(metadata), &metadata);
 			log::message(
 				SUCCEEDED(metadata_hr) ? log::level::info : log::level::warning,
-				SUCCEEDED(metadata_hr)
-					? "[Kaiozen] Q_HDR_METADATA_OK"
-					: "[Kaiozen] Q_HDR_METADATA_FAILED");
-
+				SUCCEEDED(metadata_hr) ? "[Kaiozen] R_HDR_METADATA_OK" : "[Kaiozen] R_HDR_METADATA_FAILED");
 			swapchain4->Release();
 		}
 		else
 		{
-			log::message(log::level::warning, "[Kaiozen] Q_HDR_METADATA_UNAVAILABLE");
+			log::message(log::level::warning, "[Kaiozen] R_HDR_METADATA_UNAVAILABLE");
 		}
 
 		swapchain3->Release();
 
-		log::message(
-			log::level::info,
-			"[Kaiozen] Q_HDR10_CORE_ACTIVE PQ_COPY_AND_TAG_ATOMIC=YES");
-		log::message(
-			log::level::info,
-			"[Kaiozen] Q_RESOLVED_RESOURCE_ACTIVE=YES RAW_UNORM_SRV=YES");
+		_frame_count = 0;
+		_is_initialized = true;
+		_last_reload_time = std::chrono::high_resolution_clock::now();
+
+		log::message(log::level::info,
+			"[Kaiozen] R_MINIMAL_RUNTIME=READY EFFECT_RUNTIME=BYPASSED GUI=BYPASSED");
+		log::message(log::level::info,
+			"[Kaiozen] R_HDR10_ACTIVE=YES PQ_COPY_READY=YES RAW_UNORM=YES");
+		return true;
 	}
 
 '''
-runtime = runtime.replace(late_anchor, late_block + late_anchor, 1)
+runtime = runtime.replace(empty_anchor, minimal_init + empty_anchor, 1)
 
-rtv_anchor = (
-    "\t\t\tconst bool srgb_write_enable = "
-    "(_back_buffer_format == api::format::r8g8b8a8_unorm_srgb || "
-    "_back_buffer_format == api::format::b8g8r8a8_unorm_srgb);\n"
-)
-if runtime.count(rtv_anchor) != 1:
-    raise SystemExit("FAIL: sRGB RTV anchor invalid")
+present_anchor = "\t// Lock input so it cannot be modified by other threads while we are reading it here\n"
+if runtime.count(present_anchor) != 1:
+    raise SystemExit("FAIL: minimal-present insertion anchor invalid")
 
-rtv_replacement = r'''			const bool kaiozen_hsr_core_hdr_present =
-				_device->get_api() == api::device_api::d3d11 &&
-				api::format_to_typeless(_back_buffer_format) == api::format::r8g8b8a8_typeless &&
-				_width >= 800 && _height >= 600;
+minimal_present = r'''
+	const bool kaiozen_hsr_minimal_hdr_present =
+		_device->get_api() == api::device_api::d3d11 &&
+		api::format_to_typeless(_back_buffer_format) == api::format::r8g8b8a8_typeless &&
+		_width >= 1000 &&
+		_height >= 700 &&
+		_back_buffer_resolved != 0 &&
+		_back_buffer_resolved_srv != 0 &&
+		_copy_pipeline != 0;
 
-			const bool srgb_write_enable =
-				!kaiozen_hsr_core_hdr_present &&
-				(_back_buffer_format == api::format::r8g8b8a8_unorm_srgb ||
-				 _back_buffer_format == api::format::b8g8r8a8_unorm_srgb);
+	if (kaiozen_hsr_minimal_hdr_present)
+	{
+		const api::resource resources[2] = { back_buffer_resource, _back_buffer_resolved };
+		const api::resource_usage state_old[2] = {
+			api::resource_usage::copy_source | api::resource_usage::resolve_source,
+			api::resource_usage::render_target };
+		const api::resource_usage state_new[2] = {
+			api::resource_usage::render_target,
+			api::resource_usage::shader_resource };
+		const api::resource_usage state_final[2] = {
+			api::resource_usage::present,
+			api::resource_usage::resolve_dest };
+
+		cmd_list->barrier(2, resources, state_old, state_new);
+		cmd_list->bind_pipeline(api::pipeline_stage::all_graphics, _copy_pipeline);
+		cmd_list->push_descriptors(api::shader_stage::pixel, _copy_pipeline_layout, 0,
+			api::descriptor_table_update { {}, 0, 0, 1, api::descriptor_type::sampler, &_copy_sampler_state });
+		cmd_list->push_descriptors(api::shader_stage::pixel, _copy_pipeline_layout, 1,
+			api::descriptor_table_update { {}, 0, 0, 1, api::descriptor_type::shader_resource_view, &_back_buffer_resolved_srv });
+
+		const api::viewport viewport = { 0.0f, 0.0f, static_cast<float>(_width), static_cast<float>(_height), 0.0f, 1.0f };
+		cmd_list->bind_viewports(0, 1, &viewport);
+		const api::rect scissor_rect = { 0, 0, static_cast<int32_t>(_width), static_cast<int32_t>(_height) };
+		cmd_list->bind_scissor_rects(0, 1, &scissor_rect);
+
+		cmd_list->bind_render_targets_and_depth_stencil(1, &_back_buffer_targets[back_buffer_index]);
+		cmd_list->draw(3, 1, 0, 0);
+		cmd_list->barrier(2, resources, state_new, state_final);
+		apply_state(cmd_list, _app_state);
+
+		_frame_count++;
+		if (_frame_count == 1)
+			log::message(log::level::info,
+				"[Kaiozen] R_COPY_DRAW_EXECUTED=YES RAW_UNORM_SRV=YES RAW_UNORM_RTV=YES");
+
+#if RESHADE_ADDON
+		_is_in_present_call = false;
+#endif
+		_effects_rendered_this_frame = false;
+		return;
+	}
+
 '''
-runtime = runtime.replace(rtv_anchor, rtv_replacement, 1)
-
-draw_anchor = "\t\t\tcmd_list->draw(3, 1, 0, 0);\n"
-if runtime.count(draw_anchor) != 1:
-    raise SystemExit("FAIL: final copy draw anchor invalid")
-
-draw_replacement = r'''			cmd_list->draw(3, 1, 0, 0);
-
-			if (kaiozen_hsr_core_hdr_present && _frame_count == 1)
-			{
-				log::message(
-					log::level::info,
-					"[Kaiozen] Q_COPY_DRAW_EXECUTED=YES RAW_UNORM_RTV=YES");
-			}
-'''
-runtime = runtime.replace(draw_anchor, draw_replacement, 1)
-
+runtime = runtime.replace(present_anchor, minimal_present + present_anchor, 1)
 runtime_path.write_text(runtime, encoding="utf-8", newline="\n")
 
 shader = r'''Texture2D t0 : register(t0);
 SamplerState s0 : register(s0);
-
-// KAIOZEN_HSR_CORE_HDR_COPY_Q
-// RAW UNORM input and RAW UNORM output are forced by runtime.cpp.
 
 float3 SRGBDecode(float3 v)
 {
@@ -238,7 +273,6 @@ float PQ1(float nits)
     const float c1 = 0.8359375;
     const float c2 = 18.8515625;
     const float c3 = 18.6875;
-
     float L = saturate(max(nits, 0.0) / 10000.0);
     float p = pow(L, m1);
     return pow((c1 + c2 * p) / (1.0 + c3 * p), m2);
@@ -249,40 +283,29 @@ float3 PQEncode(float3 nits)
     return float3(PQ1(nits.r), PQ1(nits.g), PQ1(nits.b));
 }
 
-void main(
-    float4 vpos : SV_POSITION,
-    float2 uv : TEXCOORD0,
-    out float4 col : SV_TARGET)
+void main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0, out float4 col : SV_TARGET)
 {
     float3 encoded709 = saturate(t0.Sample(s0, uv).rgb);
     float3 linear709 = SRGBDecode(encoded709);
 
-    // Deliberately visible witness + current oversaturation correction.
     const float SATURATION_RETENTION = 0.70;
     const float luma709 = dot(linear709, float3(0.2126, 0.7152, 0.0722));
     linear709 = lerp(luma709.xxx, linear709, SATURATION_RETENTION);
 
     float3 linear2020 = max(BT709ToBT2020(linear709), 0.0);
-
     const float SDR_WHITE_NITS = 203.0;
-    float3 nits2020 = linear2020 * SDR_WHITE_NITS;
-
-    col.rgb = saturate(PQEncode(nits2020));
+    col.rgb = saturate(PQEncode(linear2020 * SDR_WHITE_NITS));
     col.a = 1.0;
 }
 '''
 shader_path.write_text(shader, encoding="utf-8", newline="\n")
 
-print("HOTFIX=Q")
-print("ROUTE_MATCH=RGBA8_TYPELESS_FAMILY")
+print("HOTFIX=R")
+print("MODE=MINIMAL_CORE_HDR")
+print("RESHade_EFFECT_RUNTIME=BYPASSED")
+print("RESHade_GUI=BYPASSED")
+print("RENODX=SHADER_ONLY")
 print("RAW_UNORM_SRV=YES")
 print("RAW_UNORM_RTV=YES")
-print("HDR10_OWNER=RESHade_CORE")
-print("HDR10_REQUIRES_COPY_PATH=YES")
-print("SOURCE_TRANSFER=EXACT_SRGB")
-print("BT709_TO_BT2020=YES")
 print("PQ=YES")
-print("SDR_WHITE_NITS=203")
-print("SATURATION_RETENTION=70_PERCENT")
-print("HIGHLIGHT_EXPANSION=NONE")
-print("BT2446A=NONE")
+print("HDR10_OWNER=MINIMAL_CORE")
