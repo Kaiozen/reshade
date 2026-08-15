@@ -406,13 +406,17 @@ void main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0, out float4 col : SV_
     float3 encoded709 = saturate(t0.Sample(s0, uv).rgb);
     float3 linear709 = SRGBDecode(encoded709);
 
-    const float SATURATION_RETENTION = 1.00; // [Kaiozen] W2_ORIGINAL_SATURATION
+        const float SATURATION_RETENTION = 1.06; // [Kaiozen] W3_SATURATION_RETENTION
     const float luma709 = dot(linear709, float3(0.2126, 0.7152, 0.0722));
     linear709 = lerp(luma709.xxx, linear709, SATURATION_RETENTION);
 
     float3 linear2020 = max(BT709ToBT2020(linear709), 0.0);
-    const float SDR_WHITE_NITS = 203.0;
-    col.rgb = saturate(PQEncode(linear2020 * SDR_WHITE_NITS));
+        const float SDR_WHITE_NITS = 400.0; // [Kaiozen] W3_UI_WHITE_NITS
+    float3 kaiozen_w3_nits2020 = linear2020 * SDR_WHITE_NITS;
+    const float kaiozen_w3_peak = max(max(linear2020.r, linear2020.g), linear2020.b);
+    const float kaiozen_w3_shine = smoothstep(0.55, 1.00, kaiozen_w3_peak);
+    kaiozen_w3_nits2020 *= 1.0 + 0.06 * kaiozen_w3_shine; // [Kaiozen] W3_SHINE_BOOST
+    col.rgb = saturate(PQEncode(kaiozen_w3_nits2020));
     col.a = 1.0;
 }
 '''
