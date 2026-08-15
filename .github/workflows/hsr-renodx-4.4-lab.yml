@@ -70,6 +70,15 @@ jobs:
             throw "HOTFIX T SRV-only intermediate patch failed."
           }
 
+      - name: Apply ReShade D3D11 View1 fallback HOTFIX U
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_d3d11_view1_fallback.py `
+            reshade\source\d3d11\d3d11_impl_device.cpp
+          if ($LASTEXITCODE -ne 0) {
+            throw "HOTFIX U D3D11 View1 fallback patch failed."
+          }
+
       - name: Apply ReShade HSR atomic native-Present HDR HOTFIX S
         shell: pwsh
         run: |
@@ -127,6 +136,7 @@ jobs:
             "PATCH2=KAIOZEN_HSR_MINIMAL_CORE_HDR_R3",
             "PATCH3=KAIOZEN_HSR_ATOMIC_NATIVE_PRESENT_HDR_S",
             "PATCH4=KAIOZEN_HSR_SRV_ONLY_INTERMEDIATE_T",
+            "PATCH5=KAIOZEN_D3D11_VIEW1_LEGACY_FALLBACK_U",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
           Get-Content payload-reshade\manifest.txt
