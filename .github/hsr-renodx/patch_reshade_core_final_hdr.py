@@ -186,9 +186,18 @@ minimal_init = r'''
 '''
 runtime = runtime.replace(empty_anchor, minimal_init + empty_anchor, 1)
 
-present_anchor = "\t// Lock input so it cannot be modified by other threads while we are reading it here\n"
+present_anchor = (
+    "\t// Lock input so it cannot be modified by other threads while we are reading it here\n"
+    "\tstd::unique_lock<std::recursive_mutex> input_lock;\n"
+    "\tif (_input != nullptr)\n"
+    "\t\tinput_lock = _input->lock();\n"
+    "\n"
+    "\tupdate_effects();\n"
+)
 if runtime.count(present_anchor) != 1:
-    raise SystemExit("FAIL: minimal-present insertion anchor invalid")
+    raise SystemExit(
+        f"FAIL: minimal-present unique anchor count={runtime.count(present_anchor)}"
+    )
 
 minimal_present = r'''
 	const bool kaiozen_hsr_minimal_hdr_present =
