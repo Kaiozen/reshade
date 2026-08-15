@@ -98,6 +98,16 @@ jobs:
             throw "HOTFIX V minimal reset symmetry patch failed."
           }
 
+      - name: Apply HSR Present heartbeat diagnostic W4B
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_reshade_present_heartbeat_w4b.py `
+            reshade\source\runtime.cpp `
+            reshade\source\dxgi\dxgi_swapchain.cpp
+          if ($LASTEXITCODE -ne 0) {
+            throw "HOTFIX W4B heartbeat patch failed."
+          }
+
       - name: Configure MSVC x64
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -148,6 +158,7 @@ jobs:
             "PATCH5=KAIOZEN_D3D11_VIEW1_LEGACY_FALLBACK_U",
             "PATCH6=KAIOZEN_HSR_MINIMAL_RESET_SYMMETRY_V",
             "PATCH7=KAIOZEN_HSR_ORIGINAL_SATURATION_W2",
+            "PATCH8=KAIOZEN_HSR_PRESENT_HEARTBEAT_W4B",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
           Get-Content payload-reshade\manifest.txt
