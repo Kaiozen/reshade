@@ -50,14 +50,14 @@ jobs:
             throw "HOTFIX N ReShade empty-SRV patch failed."
           }
 
-      - name: Apply ReShade HSR minimal-core HDR HOTFIX R
+      - name: Apply ReShade HSR minimal-core HDR HOTFIX R3
         shell: pwsh
         run: |
           python .github\hsr-renodx\patch_reshade_core_final_hdr.py `
             reshade\source\runtime.cpp `
             reshade\res\shaders\copy_ps.hlsl
           if ($LASTEXITCODE -ne 0) {
-            throw "HOTFIX R minimal-core HDR patch failed."
+            throw "HOTFIX R3 minimal-core HDR patch failed."
           }
 
       - name: Configure MSVC x64

@@ -49,6 +49,115 @@ runtime = runtime.replace(
     1,
 )
 
+# HOTFIX R3:
+# ReShade's generic resolved texture is TYPELESS and asks for both linear and
+# sRGB RTV reinterpretations. D3DMetal rejected that HSR path before HDR
+# activation. Replace only the HSR branch with a fully typed RGBA8 UNORM
+# resource and two RAW UNORM RTVs. Keep the generic ReShade path unchanged.
+#
+# Splitting the calls also gives exact runtime failure markers instead of the
+# stock combined "Failed to create resolve texture resource!" message.
+resolve_key = (
+    "api::resource_desc(_width, _height, 1, 1, "
+    "api::format_to_typeless(_back_buffer_format), 1, "
+    "api::memory_heap::default_, usage),"
+)
+resolve_pos = runtime.find(resolve_key)
+if resolve_pos < 0 or runtime.find(resolve_key, resolve_pos + 1) >= 0:
+    raise SystemExit("FAIL: R3 generic resolve block key invalid")
+
+resolve_block_start = runtime.rfind(
+    "\t\tif (!_device->create_resource(\n",
+    0,
+    resolve_pos,
+)
+resolve_block_end = runtime.find(
+    "\n\t\tif (need_copy_pipeline)",
+    resolve_pos,
+)
+
+if resolve_block_start < 0 or resolve_block_end < 0:
+    raise SystemExit("FAIL: R3 generic resolve block boundaries invalid")
+
+stock_resolve_block = runtime[resolve_block_start:resolve_block_end]
+
+r3_resolve_block = r"""\t\tif (kaiozen_hsr_minimal_hdr)
+\t\t{
+\t\t\tconst api::format kaiozen_r3_raw_format =
+\t\t\t\tapi::format_to_default_typed(_back_buffer_format, 0);
+
+\t\t\tconst api::resource_desc kaiozen_r3_desc(
+\t\t\t\t_width,
+\t\t\t\t_height,
+\t\t\t\t1,
+\t\t\t\t1,
+\t\t\t\tkaiozen_r3_raw_format,
+\t\t\t\t1,
+\t\t\t\tapi::memory_heap::default_,
+\t\t\t\tusage);
+
+\t\t\tif (!_device->create_resource(
+\t\t\t\t\tkaiozen_r3_desc,
+\t\t\t\t\tnullptr,
+\t\t\t\t\tapi::resource_usage::copy_dest,
+\t\t\t\t\t&_back_buffer_resolved))
+\t\t\t{
+\t\t\t\tlog::message(
+\t\t\t\t\tlog::level::error,
+\t\t\t\t\t"[Kaiozen] R3_RESOLVE_TEXTURE_FAILED format=%u size=%ux%u usage=0x%X",
+\t\t\t\t\tstatic_cast<uint32_t>(kaiozen_r3_raw_format),
+\t\t\t\t\t_width,
+\t\t\t\t\t_height,
+\t\t\t\t\tstatic_cast<uint32_t>(usage));
+\t\t\t\tgoto exit_failure;
+\t\t\t}
+
+\t\t\tif (!_device->create_resource_view(
+\t\t\t\t\t_back_buffer_resolved,
+\t\t\t\t\tapi::resource_usage::render_target,
+\t\t\t\t\tapi::resource_view_desc(kaiozen_r3_raw_format),
+\t\t\t\t\t&_back_buffer_targets.emplace_back()))
+\t\t\t{
+\t\t\t\tlog::message(
+\t\t\t\t\tlog::level::error,
+\t\t\t\t\t"[Kaiozen] R3_RESOLVE_RTV0_FAILED format=%u",
+\t\t\t\t\tstatic_cast<uint32_t>(kaiozen_r3_raw_format));
+\t\t\t\tgoto exit_failure;
+\t\t\t}
+
+\t\t\t// Slot 1 intentionally duplicates the RAW UNORM view.
+\t\t\t// It exists only to preserve ReShade's backbuffer target indexing.
+\t\t\t// The HSR minimal Present path never uses an sRGB RTV here.
+\t\t\tif (!_device->create_resource_view(
+\t\t\t\t\t_back_buffer_resolved,
+\t\t\t\t\tapi::resource_usage::render_target,
+\t\t\t\t\tapi::resource_view_desc(kaiozen_r3_raw_format),
+\t\t\t\t\t&_back_buffer_targets.emplace_back()))
+\t\t\t{
+\t\t\t\tlog::message(
+\t\t\t\t\tlog::level::error,
+\t\t\t\t\t"[Kaiozen] R3_RESOLVE_RTV1_FAILED format=%u",
+\t\t\t\t\tstatic_cast<uint32_t>(kaiozen_r3_raw_format));
+\t\t\t\tgoto exit_failure;
+\t\t\t}
+
+\t\t\tlog::message(
+\t\t\t\tlog::level::info,
+\t\t\t\t"[Kaiozen] R3_RESOLVE_RESOURCE_READY=TYPED_UNORM format=%u",
+\t\t\t\tstatic_cast<uint32_t>(kaiozen_r3_raw_format));
+\t\t}
+\t\telse
+\t\t{
+""" + stock_resolve_block + r"""
+\t\t}
+"""
+
+runtime = (
+    runtime[:resolve_block_start]
+    + r3_resolve_block
+    + runtime[resolve_block_end:]
+)
+
 srv_anchor = "\t\t\t\tapi::resource_view_desc(_back_buffer_format),\n"
 if runtime.count(srv_anchor) != 1:
     raise SystemExit("FAIL: resolved SRV anchor invalid")
@@ -309,8 +418,8 @@ void main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0, out float4 col : SV_
 '''
 shader_path.write_text(shader, encoding="utf-8", newline="\n")
 
-print("HOTFIX=R")
-print("MODE=MINIMAL_CORE_HDR")
+print("HOTFIX=R3")
+print("MODE=MINIMAL_CORE_HDR_TYPED_UNORM_RESOLVE")
 print("RESHade_EFFECT_RUNTIME=BYPASSED")
 print("RESHade_GUI=BYPASSED")
 print("RENODX=SHADER_ONLY")
