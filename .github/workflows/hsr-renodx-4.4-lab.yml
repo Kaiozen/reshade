@@ -208,6 +208,16 @@ jobs:
             --variant "${{ matrix.variant }}"
           if ($LASTEXITCODE -ne 0) { throw "Variant patch failed." }
 
+      - name: Apply HSR W5 quarantine 0x318A9DF6
+        if: matrix.variant == 'shader-only'
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_hsr_quarantine_318a9df6.py `
+            renodx\src\utils\shader.hpp
+          if ($LASTEXITCODE -ne 0) {
+            throw "W5 quarantine patch failed."
+          }
+
       - name: Apply full-upstream HOTFIX L - RenoDX Apple PQ HDR
         if: matrix.variant == 'full-upstream'
         shell: pwsh
