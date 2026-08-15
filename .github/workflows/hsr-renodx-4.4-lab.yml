@@ -50,14 +50,14 @@ jobs:
             throw "HOTFIX N ReShade empty-SRV patch failed."
           }
 
-      - name: Apply ReShade HSR neutral final-copy HDR HOTFIX P
+      - name: Apply ReShade HSR atomic final-copy HDR HOTFIX Q
         shell: pwsh
         run: |
           python .github\hsr-renodx\patch_reshade_core_final_hdr.py `
             reshade\source\runtime.cpp `
             reshade\res\shaders\copy_ps.hlsl
           if ($LASTEXITCODE -ne 0) {
-            throw "HOTFIX P neutral final-copy HDR patch failed."
+            throw "HOTFIX Q atomic final-copy HDR patch failed."
           }
 
       - name: Configure MSVC x64
@@ -104,7 +104,7 @@ jobs:
             "CONFIGURATION=Release|64-bit",
             "FULL_ADDON_EXPORT=ReShadeRegisterAddon",
             "PATCH=KAIOZEN_HSR_RESHADE_EMPTY_SRV_RGBA8_N",
-            "PATCH2=KAIOZEN_HSR_CORE_FINAL_HDR_COPY_P",
+            "PATCH2=KAIOZEN_HSR_CORE_FINAL_HDR_COPY_Q",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
           Get-Content payload-reshade\manifest.txt
