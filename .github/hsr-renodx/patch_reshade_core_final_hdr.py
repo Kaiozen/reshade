@@ -81,7 +81,7 @@ if resolve_block_start < 0 or resolve_block_end < 0:
 
 stock_resolve_block = runtime[resolve_block_start:resolve_block_end]
 
-r3_resolve_block = r"""\t\tif (kaiozen_hsr_minimal_hdr)
+r3_resolve_block = """\t\tif (kaiozen_hsr_minimal_hdr)
 \t\t{
 \t\t\tconst api::format kaiozen_r3_raw_format =
 \t\t\t\tapi::format_to_default_typed(_back_buffer_format, 0);
@@ -148,7 +148,7 @@ r3_resolve_block = r"""\t\tif (kaiozen_hsr_minimal_hdr)
 \t\t}
 \t\telse
 \t\t{
-""" + stock_resolve_block + r"""
+""" + stock_resolve_block + """
 \t\t}
 """
 
