@@ -89,6 +89,15 @@ jobs:
             throw "HOTFIX S atomic native-Present HDR patch failed."
           }
 
+      - name: Apply ReShade HSR minimal reset symmetry HOTFIX V
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_reshade_minimal_reset_symmetry.py `
+            reshade\source\runtime.cpp
+          if ($LASTEXITCODE -ne 0) {
+            throw "HOTFIX V minimal reset symmetry patch failed."
+          }
+
       - name: Configure MSVC x64
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -137,6 +146,7 @@ jobs:
             "PATCH3=KAIOZEN_HSR_ATOMIC_NATIVE_PRESENT_HDR_S",
             "PATCH4=KAIOZEN_HSR_SRV_ONLY_INTERMEDIATE_T",
             "PATCH5=KAIOZEN_D3D11_VIEW1_LEGACY_FALLBACK_U",
+            "PATCH6=KAIOZEN_HSR_MINIMAL_RESET_SYMMETRY_V",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
           Get-Content payload-reshade\manifest.txt
