@@ -61,6 +61,15 @@ jobs:
           }
 
 
+      - name: Apply ReShade HSR SRV-only intermediate HOTFIX T
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_reshade_srv_only_intermediate.py `
+            reshade\source\runtime.cpp
+          if ($LASTEXITCODE -ne 0) {
+            throw "HOTFIX T SRV-only intermediate patch failed."
+          }
+
       - name: Apply ReShade HSR atomic native-Present HDR HOTFIX S
         shell: pwsh
         run: |
@@ -117,6 +126,7 @@ jobs:
             "PATCH=KAIOZEN_HSR_RESHADE_EMPTY_SRV_RGBA8_N",
             "PATCH2=KAIOZEN_HSR_MINIMAL_CORE_HDR_R3",
             "PATCH3=KAIOZEN_HSR_ATOMIC_NATIVE_PRESENT_HDR_S",
+            "PATCH4=KAIOZEN_HSR_SRV_ONLY_INTERMEDIATE_T",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
           Get-Content payload-reshade\manifest.txt
