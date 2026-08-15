@@ -406,7 +406,7 @@ void main(float4 vpos : SV_POSITION, float2 uv : TEXCOORD0, out float4 col : SV_
     float3 encoded709 = saturate(t0.Sample(s0, uv).rgb);
     float3 linear709 = SRGBDecode(encoded709);
 
-    const float SATURATION_RETENTION = 0.70;
+    const float SATURATION_RETENTION = 1.00; // [Kaiozen] W2_ORIGINAL_SATURATION
     const float luma709 = dot(linear709, float3(0.2126, 0.7152, 0.0722));
     linear709 = lerp(luma709.xxx, linear709, SATURATION_RETENTION);
 

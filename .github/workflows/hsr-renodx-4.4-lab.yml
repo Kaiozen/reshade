@@ -147,6 +147,7 @@ jobs:
             "PATCH4=KAIOZEN_HSR_SRV_ONLY_INTERMEDIATE_T",
             "PATCH5=KAIOZEN_D3D11_VIEW1_LEGACY_FALLBACK_U",
             "PATCH6=KAIOZEN_HSR_MINIMAL_RESET_SYMMETRY_V",
+            "PATCH7=KAIOZEN_HSR_ORIGINAL_SATURATION_W2",
             "SHA256=$hash"
           ) | Set-Content payload-reshade\manifest.txt -Encoding ascii
           Get-Content payload-reshade\manifest.txt
