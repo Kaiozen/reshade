@@ -1,7 +1,12 @@
 name: HSR RenoDX Compile-First Full HDR
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - ".github/workflows/hsr-renodx-compile-first.yml"
+      - ".github/hsr-compile-first/**"
 
 permissions:
   contents: read
