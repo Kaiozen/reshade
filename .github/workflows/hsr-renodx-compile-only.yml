@@ -1,0 +1,104 @@
+name: HSR RenoDX Compile-Only Full HDR
+
+on:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - ".github/workflows/hsr-renodx-compile-only.yml"
+      - ".github/hsr-compile-only/**"
+
+permissions:
+  contents: read
+
+env:
+  RENODX_REF: ee9ddee35e125e95e5fd242c1431b2a253cc9068
+
+jobs:
+  build:
+    name: Full RenoDX HSR HDR, compile-only
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: clshortfuse/renodx
+          ref: ${{ env.RENODX_REF }}
+          path: renodx
+          submodules: recursive
+
+      - name: Verify RenoDX pin
+        shell: pwsh
+        run: |
+          $actual = (git -C renodx rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:RENODX_REF.ToLowerInvariant()) { throw "Bad RenoDX pin: $actual" }
+
+      - name: Apply full HSR shader-only base
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_hsr_variant.py `
+            --file renodx\src\games\honkai-starrail\addon.cpp `
+            --variant shader-only
+          if ($LASTEXITCODE -ne 0) { throw "Base variant failed" }
+
+      - name: Apply W10 compile-only
+        shell: pwsh
+        run: |
+          python .github\hsr-compile-only\patch_compile_only.py `
+            renodx\src\games\honkai-starrail\addon.cpp `
+            renodx\src\mods\shader.hpp
+          if ($LASTEXITCODE -ne 0) { throw "W10 patch failed" }
+
+      - name: Set up shader tools
+        shell: pwsh
+        working-directory: renodx
+        run: .\scripts\setup-dev-env.ps1 -Update -Tools dxc,slang,glslang
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --preset vs-x64
+
+      - name: Build
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --build --preset vs-x64-release --target honkai-starrail --verbose
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $addon = Get-ChildItem renodx -Recurse -File -Filter renodx-honkai-starrail.addon64 |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $addon) { throw "Addon missing" }
+
+          New-Item -ItemType Directory -Force payload | Out-Null
+          $out = "payload\renodx-hsr-compile-only.addon64"
+          Copy-Item $addon.FullName $out -Force
+
+          $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($out))
+          if ($ascii -notmatch "W10_COMPILE_ONLY_FULL_HDR") { throw "W10 marker missing" }
+          if ($ascii -match "W5_QUARANTINE_318A9DF6") { throw "W5 contamination" }
+
+          $hash = (Get-FileHash $out -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "VARIANT=W10-compile-only-full-hdr",
+            "FULL_RENODX_HSR_HDR=YES",
+            "ALL_5_HSR_SHADERS=YES",
+            "FORCE_PIPELINE_CLONING=OFF",
+            "COMPILE_TIME_REPLACEMENT=ON",
+            "RUNTIME_FALLBACK_FOR_COMPILE_SUPPORTED=OFF",
+            "W5=OFF",
+            "SHA256=$hash"
+          ) | Set-Content payload\manifest.txt -Encoding ascii
+          Get-Content payload\manifest.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hsr-renodx-compile-only-full-hdr
+          path: payload
+          if-no-files-found: error
+          retention-days: 14
