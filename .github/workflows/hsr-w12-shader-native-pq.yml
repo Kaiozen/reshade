@@ -1,0 +1,194 @@
+name: HSR W12 Shader-Native PQ
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - ".github/workflows/hsr-w12-shader-native-pq.yml"
+      - ".github/hsr-w12/**"
+
+permissions:
+  contents: read
+
+env:
+  RENODX_REF: ee9ddee35e125e95e5fd242c1431b2a253cc9068
+
+jobs:
+  build:
+    name: W12 RenoDX shader-native PQ
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: clshortfuse/renodx
+          ref: ${{ env.RENODX_REF }}
+          path: renodx
+          submodules: recursive
+
+      - name: Verify RenoDX pin
+        shell: pwsh
+        run: |
+          $actual = (git -C renodx rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:RENODX_REF.ToLowerInvariant()) {
+            throw "Bad RenoDX pin: $actual"
+          }
+          "RENODX_PIN=PASS"
+
+      - name: Apply shader-only base
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_hsr_variant.py `
+            --file renodx\src\games\honkai-starrail\addon.cpp `
+            --variant shader-only
+          if ($LASTEXITCODE -ne 0) { throw "shader-only base failed" }
+
+      - name: Apply W10 compile-only base
+        shell: pwsh
+        run: |
+          python .github\hsr-compile-only\patch_compile_only.py `
+            renodx\src\games\honkai-starrail\addon.cpp `
+            renodx\src\mods\shader.hpp
+          if ($LASTEXITCODE -ne 0) { throw "W10 base failed" }
+
+      - name: Apply W12 shader-native PQ architecture
+        shell: pwsh
+        run: |
+          python .github\hsr-w12\patch_w12.py `
+            renodx\src\games\honkai-starrail\addon.cpp `
+            renodx\src\games\honkai-starrail\common.hlsl `
+            renodx\src\games\honkai-starrail\uberpost0_0x93121324.ps_4_0.hlsl `
+            renodx\src\games\honkai-starrail\uberpost1_0x318A9DF6.ps_4_0.hlsl `
+            renodx\src\games\honkai-starrail\uberpost2_0xB2079998.ps_4_0.hlsl `
+            renodx\src\games\honkai-starrail\uberpost3_0x1AC9F8BC.ps_4_0.hlsl
+          if ($LASTEXITCODE -ne 0) { throw "W12 patch failed" }
+
+      - name: Static proof
+        shell: pwsh
+        run: |
+          $addon = Get-Content renodx\src\games\honkai-starrail\addon.cpp -Raw
+          $common = Get-Content renodx\src\games\honkai-starrail\common.hlsl -Raw
+
+          foreach ($token in @(
+            'W12_SHADER_NATIVE_PQ=ACTIVE',
+            'PRESENT_CALLBACK=NO',
+            'RESHADE_FINAL_COPY=OFF',
+            'addon_event::init_swapchain',
+            'SetColorSpace1',
+            'SetHDRMetaData'
+          )) {
+            if ($addon -notmatch [regex]::Escape($token)) {
+              throw "Missing addon token: $token"
+            }
+          }
+
+          if ($common -notmatch 'KaiozenW12PQCarrier') {
+            throw "PQ helper missing"
+          }
+
+          $finals = @(
+            'uberpost0_0x93121324.ps_4_0.hlsl',
+            'uberpost1_0x318A9DF6.ps_4_0.hlsl',
+            'uberpost2_0xB2079998.ps_4_0.hlsl',
+            'uberpost3_0x1AC9F8BC.ps_4_0.hlsl'
+          )
+
+          foreach ($f in $finals) {
+            $text = Get-Content ("renodx\src\games\honkai-starrail\" + $f) -Raw
+            if ($text -notmatch 'KAIOZEN_W12_FINAL_PQ') {
+              throw "W12 final PQ marker missing in $f"
+            }
+          }
+
+          $lut = Get-Content `
+            renodx\src\games\honkai-starrail\lutbuilder_0x12F5D245.ps_4_0.hlsl `
+            -Raw
+          if ($lut -match 'KAIOZEN_W12_FINAL_PQ') {
+            throw "LUT builder was incorrectly PQ encoded"
+          }
+
+          "W12_STATIC_PROOF=PASS"
+          "FINAL_PQ_SHADERS=4"
+          "LUT_BUILDER_PQ=NO"
+          "PRESENT_CALLBACK=NO"
+          "RESHADE_FINAL_COPY=NO"
+
+      - name: Set up shader tools
+        shell: pwsh
+        working-directory: renodx
+        run: .\scripts\setup-dev-env.ps1 -Update -Tools dxc,slang,glslang
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --preset vs-x64
+
+      - name: Build
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --build --preset vs-x64-release --target honkai-starrail --verbose
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $addon = Get-ChildItem renodx -Recurse -File `
+            -Filter renodx-honkai-starrail.addon64 |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+
+          if (-not $addon) { throw "Addon missing" }
+
+          New-Item -ItemType Directory -Force payload | Out-Null
+          Copy-Item $addon.FullName payload\renodx-hsr-w12-shader-native-pq.addon64 -Force
+
+          $ascii = [Text.Encoding]::ASCII.GetString(
+            [IO.File]::ReadAllBytes(
+              'payload\renodx-hsr-w12-shader-native-pq.addon64'))
+
+          foreach ($marker in @(
+            'KAIOZEN_HSR_44_W12_SHADER_NATIVE_PQ',
+            'W12_SHADER_NATIVE_PQ=ACTIVE',
+            'W12_HDR10_SWAPCHAIN=ACTIVE'
+          )) {
+            if ($ascii -notmatch [regex]::Escape($marker)) {
+              throw "Binary marker missing: $marker"
+            }
+          }
+
+          $hash = (
+            Get-FileHash `
+              payload\renodx-hsr-w12-shader-native-pq.addon64 `
+              -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          @(
+            'VARIANT=HSR-W12-SHADER-NATIVE-PQ',
+            'RENODX_COMMIT=' + $env:RENODX_REF,
+            'FORCE_PIPELINE_CLONING=OFF',
+            'RUNTIME_FALLBACK=OFF',
+            'FINAL_PQ_SHADERS=4',
+            'LUT_BUILDER_PQ=NO',
+            'W3_PQ_MATH_PRESERVED=YES',
+            'RESHADE_FINAL_COPY=OFF',
+            'PRESENT_CALLBACK=NO',
+            'HDR_TAG_EVENT=INIT_SWAPCHAIN',
+            'SWAPCHAIN_FORMAT=RGBA8_UNORM',
+            'SHA256=' + $hash
+          ) | Set-Content payload\manifest.txt -Encoding ascii
+
+          Get-Content payload\manifest.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hsr-w12-shader-native-pq
+          path: payload
+          if-no-files-found: error
+          retention-days: 14
