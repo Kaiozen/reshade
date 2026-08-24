@@ -1,0 +1,193 @@
+name: HSR W13 Static Injection Free
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - ".github/workflows/hsr-w13-static-injection-free.yml"
+      - ".github/hsr-w13/**"
+
+permissions:
+  contents: read
+
+env:
+  RENODX_REF: ee9ddee35e125e95e5fd242c1431b2a253cc9068
+
+jobs:
+  build:
+    name: W13 static injection-free RenoDX
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned RenoDX
+        uses: actions/checkout@v4
+        with:
+          repository: clshortfuse/renodx
+          ref: ${{ env.RENODX_REF }}
+          path: renodx
+          submodules: recursive
+
+      - name: Verify RenoDX pin
+        shell: pwsh
+        run: |
+          $actual = (git -C renodx rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:RENODX_REF.ToLowerInvariant()) {
+            throw "Bad RenoDX pin: $actual"
+          }
+          "RENODX_PIN=PASS"
+
+      - name: Apply shader-only base
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_hsr_variant.py `
+            --file renodx\src\games\honkai-starrail\addon.cpp `
+            --variant shader-only
+          if ($LASTEXITCODE -ne 0) { throw "shader-only base failed" }
+
+      - name: Apply W10 compile-only behavior
+        shell: pwsh
+        run: |
+          python .github\hsr-compile-only\patch_compile_only.py `
+            renodx\src\games\honkai-starrail\addon.cpp `
+            renodx\src\mods\shader.hpp
+          if ($LASTEXITCODE -ne 0) { throw "W10 compile-only failed" }
+
+      - name: Apply W13 static injection-free patch
+        shell: pwsh
+        run: |
+          python .github\hsr-w13\patch_w13_static_injection_free.py `
+            renodx\src\games\honkai-starrail\addon.cpp `
+            renodx\src\mods\shader.hpp `
+            renodx\src\games\honkai-starrail\shared.h
+          if ($LASTEXITCODE -ne 0) { throw "W13 patch failed" }
+
+      - name: Static proof
+        shell: pwsh
+        run: |
+          $addon = Get-Content `
+            renodx\src\games\honkai-starrail\addon.cpp -Raw
+          $shared = Get-Content `
+            renodx\src\games\honkai-starrail\shared.h -Raw
+          $mods = Get-Content renodx\src\mods\shader.hpp -Raw
+
+          foreach ($token in @(
+            'W13_STATIC_INJECTION_FREE=ACTIVE',
+            'FORCE_PIPELINE_CLONING=OFF',
+            'RUNTIME_FALLBACK=OFF',
+            'SETTINGS_RUNTIME=OFF',
+            'CBV13=OFF',
+            'INJECTION_POINTER=NULL'
+          )) {
+            if ($addon -notmatch [regex]::Escape($token)) {
+              throw "Missing W13 token: $token"
+            }
+          }
+
+          foreach ($forbidden in @(
+            'ShaderInjectData shader_injection;',
+            'renodx::utils::settings::Use(',
+            '&shader_injection'
+          )) {
+            if ($addon -match [regex]::Escape($forbidden)) {
+              throw "Dynamic injection residue: $forbidden"
+            }
+          }
+
+          if ($shared -match 'cbuffer cb13') {
+            throw "cb13 remains"
+          }
+          if ($shared -match 'register\(b13\)') {
+            throw "b13 register remains"
+          }
+          if ($shared -notmatch 'static const ShaderInjectData injectedData') {
+            throw "Static defaults missing"
+          }
+          if ($mods -match '// Use Runtime as fallback') {
+            throw "Runtime fallback regression"
+          }
+
+          "W13_STATIC_PROOF=PASS"
+          "SETTINGS_RUNTIME=OFF"
+          "CBV13=OFF"
+          "INJECTION_POINTER=NULL"
+          "PIPELINE_LAYOUT_INJECTION_TRIGGER=OFF"
+          "COMPILE_TIME_REPLACEMENT=ON"
+
+      - name: Set up shader tools
+        shell: pwsh
+        working-directory: renodx
+        run: .\scripts\setup-dev-env.ps1 -Update -Tools dxc,slang,glslang
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --preset vs-x64
+
+      - name: Build
+        shell: pwsh
+        working-directory: renodx
+        run: cmake --build --preset vs-x64-release --target honkai-starrail --verbose
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $addon = Get-ChildItem renodx -Recurse -File `
+            -Filter renodx-honkai-starrail.addon64 |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+
+          if (-not $addon) { throw "W13 addon missing" }
+
+          New-Item -ItemType Directory -Force payload | Out-Null
+          $dst = 'payload\renodx-hsr-w13-static-injection-free.addon64'
+          Copy-Item $addon.FullName $dst -Force
+
+          $ascii = [Text.Encoding]::ASCII.GetString(
+            [IO.File]::ReadAllBytes($dst))
+
+          foreach ($marker in @(
+            'KAIOZEN_HSR_44_W13_STATIC_INJECTION_FREE',
+            'W13_STATIC_INJECTION_FREE=ACTIVE',
+            'INJECTION_POINTER=NULL'
+          )) {
+            if ($ascii -notmatch [regex]::Escape($marker)) {
+              throw "Binary marker missing: $marker"
+            }
+          }
+
+          $hash = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          @(
+            "VARIANT=HSR-W13-STATIC-INJECTION-FREE"
+            "RENODX_COMMIT=$($env:RENODX_REF)"
+            "FORCE_PIPELINE_CLONING=OFF"
+            "RUNTIME_FALLBACK=OFF"
+            "SETTINGS_RUNTIME=OFF"
+            "CBV13=OFF"
+            "INJECTION_POINTER=NULL"
+            "STATIC_TONEMAP_TYPE=3"
+            "STATIC_PEAK_NITS=1000"
+            "STATIC_GAME_NITS=203"
+            "STATIC_UI_NITS=203"
+            "SHA256=$hash"
+          ) | Set-Content payload\manifest.txt -Encoding ascii
+
+          Get-Content payload\manifest.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hsr-w13-static-injection-free
+          path: payload
+          if-no-files-found: error
+          retention-days: 14
