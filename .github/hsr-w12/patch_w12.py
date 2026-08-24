@@ -28,7 +28,7 @@ if addon.count(include_anchor) != 1:
     raise SystemExit("FAIL: W12 DXGI include anchor")
 addon = addon.replace(
     include_anchor,
-    include_anchor + "#include <dxgi1_6.h>\n",
+    include_anchor + "#include <dxgi1_6.h>\n#include <cstdio>\n",
     1,
 )
 
@@ -76,12 +76,17 @@ void KaiozenW12InitSwapchain(
   if (FAILED(support_hr) ||
       (support &
        DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) == 0) {
-    reshade::log::message(
-        reshade::log::level::error,
+    char support_message[256] = {};
+    std::snprintf(
+        support_message,
+        sizeof(support_message),
         "[Kaiozen] W12_HDR10_SWAPCHAIN=FAIL "
         "COLORSPACE_UNSUPPORTED hr=0x%08X support=0x%08X",
         static_cast<unsigned int>(support_hr),
         support);
+    reshade::log::message(
+        reshade::log::level::error,
+        support_message);
     swapchain3->Release();
     return;
   }
@@ -117,11 +122,14 @@ void KaiozenW12InitSwapchain(
     swapchain4->Release();
   }
 
-  reshade::log::message(
-      SUCCEEDED(color_hr) && SUCCEEDED(metadata_hr)
-          ? reshade::log::level::info
-          : reshade::log::level::error,
-      SUCCEEDED(color_hr) && SUCCEEDED(metadata_hr)
+  const bool hdr_active =
+      SUCCEEDED(color_hr) && SUCCEEDED(metadata_hr);
+
+  char result_message[320] = {};
+  std::snprintf(
+      result_message,
+      sizeof(result_message),
+      hdr_active
           ? "[Kaiozen] W12_HDR10_SWAPCHAIN=ACTIVE "
             "EVENT=INIT_SWAPCHAIN PRESENT_CALLBACK=NO "
             "RESHADE_FINAL_COPY=NO "
@@ -131,6 +139,12 @@ void KaiozenW12InitSwapchain(
       static_cast<unsigned int>(color_hr),
       static_cast<unsigned int>(metadata_hr),
       resize ? 1u : 0u);
+
+  reshade::log::message(
+      hdr_active
+          ? reshade::log::level::info
+          : reshade::log::level::error,
+      result_message);
 
   swapchain3->Release();
 }
