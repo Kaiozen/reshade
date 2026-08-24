@@ -142,9 +142,14 @@ addon = addon.replace(
     1,
 )
 
-register_anchor = '      if (!reshade::register_addon(h_module)) return FALSE;\n'
+register_anchor = (
+    "      if (!reshade::register_addon(h_module))\n"
+    "        return FALSE;\n"
+)
 if addon.count(register_anchor) != 1:
-    raise SystemExit("FAIL: W12 register addon anchor")
+    raise SystemExit(
+        f"FAIL: W12 register addon anchor count={addon.count(register_anchor)}"
+    )
 addon = addon.replace(
     register_anchor,
     register_anchor
