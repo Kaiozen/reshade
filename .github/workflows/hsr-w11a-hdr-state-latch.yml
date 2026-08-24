@@ -1,0 +1,184 @@
+name: HSR W11A HDR State Latch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hsr-renodx-4.4-lab
+    paths:
+      - ".github/workflows/hsr-w11a-hdr-state-latch.yml"
+      - ".github/hsr-w11a/**"
+
+permissions:
+  contents: read
+
+env:
+  RESHADE_REF: v6.8.0
+  RESHADE_SHA: 18deaa52de0c425a78b329e9cb3c497281cd00ec
+
+jobs:
+  build:
+    name: ReShade W11A DX11 HDR state latch
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout lab control files
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned ReShade
+        uses: actions/checkout@v4
+        with:
+          repository: crosire/reshade
+          ref: ${{ env.RESHADE_REF }}
+          path: reshade
+          submodules: recursive
+
+      - name: Verify ReShade pin
+        shell: pwsh
+        run: |
+          $actual = (git -C reshade rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:RESHADE_SHA.ToLowerInvariant()) {
+            throw "Unexpected ReShade commit: $actual"
+          }
+          "RESHADE_PIN=PASS"
+
+      - name: Apply exact proven pre-W11A HSR ReShade stack
+        shell: pwsh
+        run: |
+          python .github\hsr-renodx\patch_reshade_empty_srv.py `
+            reshade\source\runtime.cpp
+          if ($LASTEXITCODE -ne 0) { throw "HOTFIX N failed" }
+
+          python .github\hsr-renodx\patch_reshade_core_final_hdr.py `
+            reshade\source\runtime.cpp `
+            reshade\res\shaders\copy_ps.hlsl
+          if ($LASTEXITCODE -ne 0) { throw "HOTFIX R3 failed" }
+
+          python .github\hsr-renodx\patch_reshade_srv_only_intermediate.py `
+            reshade\source\runtime.cpp
+          if ($LASTEXITCODE -ne 0) { throw "HOTFIX T failed" }
+
+          python .github\hsr-renodx\patch_d3d11_view1_fallback.py `
+            reshade\source\d3d11\d3d11_impl_device.cpp
+          if ($LASTEXITCODE -ne 0) { throw "HOTFIX U failed" }
+
+          python .github\hsr-renodx\patch_reshade_atomic_present_hdr.py `
+            reshade\source\runtime.cpp `
+            reshade\source\dxgi\dxgi_swapchain.cpp
+          if ($LASTEXITCODE -ne 0) { throw "HOTFIX S failed" }
+
+          python .github\hsr-renodx\patch_reshade_minimal_reset_symmetry.py `
+            reshade\source\runtime.cpp
+          if ($LASTEXITCODE -ne 0) { throw "HOTFIX V failed" }
+
+          python .github\hsr-renodx\patch_reshade_present_heartbeat_w4b.py `
+            reshade\source\runtime.cpp `
+            reshade\source\dxgi\dxgi_swapchain.cpp
+          if ($LASTEXITCODE -ne 0) { throw "W4B failed" }
+
+      - name: Apply W11A persistent HDR state latch
+        shell: pwsh
+        run: |
+          python .github\hsr-w11a\patch_reshade_hdr_state_latch_w11a.py `
+            reshade\source\dxgi\dxgi_swapchain.cpp
+          if ($LASTEXITCODE -ne 0) { throw "W11A failed" }
+
+      - name: Static proof
+        shell: pwsh
+        run: |
+          $dxgi = Get-Content reshade\source\dxgi\dxgi_swapchain.cpp -Raw
+          $runtime = Get-Content reshade\source\runtime.cpp -Raw
+
+          if ($dxgi -notmatch 'W11A_HDR_STATE_LATCH=ACTIVE') {
+            throw "W11A marker missing"
+          }
+          if ($dxgi -notmatch 'HDR_STATE_CALLS_THIS_PRESENT=0') {
+            throw "W11A zero-per-present marker missing"
+          }
+
+          $colorCalls = ([regex]::Matches(
+            $dxgi,
+            'swapchain3->SetColorSpace1\('
+          )).Count
+          $metadataCalls = ([regex]::Matches(
+            $dxgi,
+            'swapchain4->SetHDRMetaData\('
+          )).Count
+
+          if ($colorCalls -ne 1) {
+            throw "Expected one SetColorSpace1 source callsite, got $colorCalls"
+          }
+          if ($metadataCalls -ne 1) {
+            throw "Expected one SetHDRMetaData source callsite, got $metadataCalls"
+          }
+          if ($runtime -notmatch 'KAIOZEN_HSR_HDR_ARMED_GUID') {
+            throw "Runtime HDR arm/reset path missing"
+          }
+
+          "W11A_STATIC_PROOF=PASS"
+          "SETCOLORSPACE_SOURCE_CALLS=1"
+          "SETHDRMETADATA_SOURCE_CALLS=1"
+          "PQ_COPY_MATH_CHANGED=NO"
+          "SWAPCHAIN_FORMAT_CHANGED=NO"
+
+      - name: Configure MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Build ReShade x64 Release
+        shell: pwsh
+        run: |
+          msbuild reshade\ReShade.sln `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=64-bit `
+            /m:1 `
+            /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "ReShade build failed" }
+
+      - name: Package W11A
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem reshade -Recurse -File -Filter ReShade64.dll |
+            Where-Object { $_.FullName -notmatch '\\deps\\' } |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+
+          if (-not $dll) { throw "ReShade64.dll missing" }
+
+          $exports = dumpbin /exports $dll.FullName | Out-String
+          if ($exports -notmatch 'ReShadeRegisterAddon') {
+            throw "Addon export missing"
+          }
+
+          New-Item -ItemType Directory -Force payload | Out-Null
+          Copy-Item $dll.FullName payload\ReShade64.dll -Force
+
+          $hash = (
+            Get-FileHash payload\ReShade64.dll -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          @(
+            "VARIANT=HSR-W11A-HDR-STATE-LATCH",
+            "RESHADE_COMMIT=$env:RESHADE_SHA",
+            "DX11_ONLY=YES",
+            "NATIVE_SWAPCHAIN_FORMAT_MUTATION=NO",
+            "RGBA8_PQ_COPY_UNCHANGED=YES",
+            "HDR_STATE_LATCH=YES",
+            "SETCOLORSPACE_PER_SWAPCHAIN_GENERATION=1",
+            "SETHDRMETADATA_PER_SWAPCHAIN_GENERATION=1",
+            "REAPPLY_AFTER_RESET=YES",
+            "W10_RENODX_ADDON_CHANGED=NO",
+            "SHA256=$hash"
+          ) | Set-Content payload\manifest.txt -Encoding ascii
+
+          Get-Content payload\manifest.txt
+
+      - name: Upload W11A
+        uses: actions/upload-artifact@v4
+        with:
+          name: hsr-reshade-w11a-hdr-state-latch
+          path: payload
+          if-no-files-found: error
+          retention-days: 14
